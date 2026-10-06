@@ -9,6 +9,8 @@ type Input = {
   maxConsecutiveDays: number;
   workingDays: number[];
   maxWeeklyDays?: number;
+  weekStartsOn?: number;
+  priorWorkingDates?: Record<string, string[]>;
 };
 
 function leaveStatus(type: ScheduleEmployee["timeOff"][number]["type"]): GeneratedAssignment["status"] {
@@ -24,12 +26,31 @@ export function generateSchedule(input: Input) {
   const workCount = new Map<string, number>();
   const consecutive = new Map<string, number>();
   const weeklyCount = new Map<string, number>();
-  let currentWeek = -1;
+  const weekStartsOn = input.weekStartsOn ?? 0;
+  const weekKeyFor = (date: Date) => {
+    const start = new Date(date);
+    start.setDate(date.getDate() - ((date.getDay() - weekStartsOn + 7) % 7));
+    return format(start, "yyyy-MM-dd");
+  };
+  let currentWeek = weekKeyFor(first);
+  const yesterday = new Date(first);
+  yesterday.setDate(first.getDate() - 1);
+  for (const employee of input.employees) {
+    const worked = new Set(input.priorWorkingDates?.[employee.id] ?? []);
+    const cursor = new Date(yesterday);
+    let run = 0;
+    while (worked.has(format(cursor, "yyyy-MM-dd"))) {
+      run += 1;
+      cursor.setDate(cursor.getDate() - 1);
+    }
+    consecutive.set(employee.id, run);
+    weeklyCount.set(employee.id, [...worked].filter((date) => weekKeyFor(new Date(`${date}T12:00:00`)) === currentWeek).length);
+  }
 
   for (const date of days) {
     const dateKey = format(date, "yyyy-MM-dd");
     const weekday = date.getDay();
-    const weekKey = Math.floor((date.getDate() + new Date(date.getFullYear(), date.getMonth(), 1).getDay() - 1) / 7);
+    const weekKey = weekKeyFor(date);
     if (weekKey !== currentWeek) {
       weeklyCount.clear();
       currentWeek = weekKey;

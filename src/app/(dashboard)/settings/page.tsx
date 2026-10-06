@@ -135,9 +135,21 @@ export default function SettingsPage() {
       !confirm("Deactivate this shift? Existing schedule history will be kept.")
     )
       return;
-    await fetch(`/api/shifts/${id}`, { method: "DELETE" });
-    setNotice({ kind: "success", text: "Shift deactivated." });
-    await load();
+    const response = await fetch(`/api/shifts/${id}`, { method: "DELETE" });
+    const body = await response.json();
+    setNotice({ kind: response.ok ? "success" : "error", text: response.ok ? "Shift deactivated." : body.error });
+    if (response.ok) await load();
+  }
+
+  async function updateShift(event: FormEvent<HTMLFormElement>, id: string) {
+    event.preventDefault();
+    setSaving(true);
+    const values = new FormData(event.currentTarget);
+    const response = await fetch(`/api/shifts/${id}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name: values.get("name"), startTime: values.get("startTime"), endTime: values.get("endTime") }) });
+    const body = await response.json();
+    setNotice({ kind: response.ok ? "success" : "error", text: response.ok ? "Shift details updated. Future schedules will use the new times." : body.error });
+    if (response.ok) await load();
+    setSaving(false);
   }
 
   async function addCategory(event: FormEvent<HTMLFormElement>) {
@@ -438,34 +450,26 @@ export default function SettingsPage() {
                 <div className="space-y-3">
                   {data.shifts.length ? (
                     data.shifts.map((shift) => (
-                      <div
+                      <form
                         key={shift.id}
-                        className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-slate-200 p-4"
+                        onSubmit={(event) => updateShift(event, shift.id)}
+                        className="grid gap-3 rounded-xl border border-slate-200 p-4 md:grid-cols-[1fr_130px_130px_auto] md:items-end"
                       >
-                        <div>
-                          <p className="font-bold text-slate-900">
-                            {shift.name}
-                          </p>
-                          <p className="mt-1 text-sm text-slate-500">
-                            {shift.startTime}–{shift.endTime}
-                          </p>
-                        </div>
-                        <div className="flex gap-2 text-xs font-semibold">
-                          <span className="rounded-full bg-blue-50 px-3 py-1.5 text-blue-700">
-                            {shift.staffingRules[0]?.minimumStaff ?? 0} minimum
-                          </span>
-                          <span className="rounded-full bg-violet-50 px-3 py-1.5 text-violet-700">
-                            {shift.staffingRules[0]?.minimumBilingual ?? 0}{" "}
-                            bilingual
-                          </span>
+                        <label className="text-xs font-bold text-slate-600">Shift name<input name="name" required minLength={2} defaultValue={shift.name} className={field} /></label>
+                        <label className="text-xs font-bold text-slate-600">Start time<input name="startTime" required type="time" defaultValue={shift.startTime} className={field} /></label>
+                        <label className="text-xs font-bold text-slate-600">End time<input name="endTime" required type="time" defaultValue={shift.endTime} className={field} /></label>
+                        <div className="flex gap-2">
+                          <button disabled={saving} className="rounded-lg bg-slate-950 px-4 py-3 text-xs font-bold text-white">Save</button>
                           <button
+                            type="button"
+                            aria-label={`Deactivate ${shift.name}`}
                             onClick={() => removeShift(shift.id)}
-                            className="rounded-lg p-1 text-slate-400 hover:bg-red-50 hover:text-red-600"
+                            className="rounded-lg border border-slate-200 p-3 text-slate-400 hover:bg-red-50 hover:text-red-600"
                           >
                             <Trash2 className="h-4 w-4" />
                           </button>
                         </div>
-                      </div>
+                      </form>
                     ))
                   ) : (
                     <p className="rounded-xl bg-slate-50 p-6 text-center text-sm text-slate-500">

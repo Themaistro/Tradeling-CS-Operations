@@ -1,7 +1,7 @@
 "use client";
 /* eslint-disable react-hooks/set-state-in-effect */
 import { FormEvent, useEffect, useState } from "react";
-import { Clock3, LoaderCircle, Plus, Trash2, UserRound } from "lucide-react";
+import { Clock3, LoaderCircle, Plus, Sparkles, Trash2, UserRound } from "lucide-react";
 import { PageHeading } from "@/components/ui/page-heading";
 type Daily = {
   assignments: {
@@ -85,6 +85,23 @@ export default function TasksPage() {
     setMessage(r.ok ? "Break time saved." : (await r.json()).error);
     await load();
   }
+  async function removeBreak(employeeId: string) {
+    const response = await fetch("/api/daily/breaks", { method: "DELETE", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ date, employeeId }) });
+    setMessage(response.ok ? "Break removed." : (await response.json()).error);
+    await load();
+  }
+  async function buildPlan(replace = false) {
+    setLoading(true);
+    const response = await fetch("/api/daily/plan", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ date, replace }) });
+    const body = await response.json();
+    if (response.status === 409 && body.code === "PLAN_EXISTS") {
+      setLoading(false);
+      if (confirm(`This date already has ${body.existingTasks} task assignment(s) and ${body.existingBreaks} break(s). Rebuild the complete daily plan?`)) await buildPlan(true);
+      return;
+    }
+    setMessage(response.ok ? `Daily plan created: ${body.tasksCreated} task assignment(s) and ${body.breaksCreated} break(s).${body.warnings?.length ? ` ${body.warnings.join(" ")}` : ""}` : body.error);
+    await load();
+  }
   return (
     <div className="mx-auto max-w-7xl">
       <PageHeading
@@ -92,7 +109,7 @@ export default function TasksPage() {
         title="Daily Tasks"
         description="Assign responsibilities, notes, and breaks to employees from the approved schedule."
       />
-      <div className="mb-6 flex items-end gap-4 rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+      <div className="mb-6 flex flex-wrap items-end gap-4 rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
         <label className="text-sm font-bold">
           Operation date
           <input
@@ -105,6 +122,15 @@ export default function TasksPage() {
         <p className="pb-3 text-sm text-slate-500">
           Only employees working on the approved roster appear below.
         </p>
+        <button
+          type="button"
+          disabled={loading || !data?.assignments.length}
+          onClick={() => void buildPlan()}
+          className="ml-auto flex items-center gap-2 rounded-xl bg-violet-700 px-5 py-3 text-sm font-bold text-white disabled:cursor-not-allowed disabled:opacity-40"
+        >
+          <Sparkles className="h-4 w-4" />
+          Build daily plan
+        </button>
       </div>
       {message && (
         <p className="mb-5 rounded-xl bg-blue-50 p-4 text-sm font-semibold text-blue-700">
@@ -147,10 +173,10 @@ export default function TasksPage() {
                     </div>
                   </div>
                   {br && (
-                    <span className="flex items-center gap-1 rounded-full bg-blue-50 px-3 py-1 text-xs font-bold text-blue-700">
-                      <Clock3 className="h-3 w-3" />
-                      {br.startTime}–{br.endTime}
-                    </span>
+                    <div className="flex items-center gap-1 rounded-full bg-blue-50 pl-3 text-xs font-bold text-blue-700">
+                      <Clock3 className="h-3 w-3" /> {br.startTime}–{br.endTime}
+                      <button type="button" aria-label={`Remove break for ${a.employee.name}`} onClick={() => void removeBreak(a.employee.id)} className="rounded-full p-2 text-blue-400 hover:bg-red-50 hover:text-red-600"><Trash2 className="h-3 w-3" /></button>
+                    </div>
                   )}
                 </header>
                 <div className="mt-4 space-y-2">
