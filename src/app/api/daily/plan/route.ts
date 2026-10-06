@@ -76,7 +76,7 @@ export async function POST(request: Request) {
         const rightLast = focusHistory.find((task) => task.employeeId === right.employeeId && normalizeQueue(task.category.name) === queueKey)?.date.getTime() ?? 0;
         return leftLast - rightLast || left.employee.name.localeCompare(right.employee.name);
       })[0];
-      if (!unassigned.length) warnings.push(`${assignment.employee.name} must cover more than one focus queue on ${shift.name} because no additional eligible agent is available.`);
+      if (!unassigned.length && shiftAssignments.length > 1) warnings.push(`${assignment.employee.name} must cover more than one focus queue on ${shift.name} because no additional eligible agent is available.`);
       focusOwners.add(assignment.employeeId);
       taskRows.push({ date, employeeId: assignment.employeeId, categoryId: queue.category.id, priority: 1, startTime: queue.startTime, endTime: queue.endTime, note: `${queue.accountNames.join(" + ")} · primary focus` });
     }
@@ -105,7 +105,11 @@ export async function POST(request: Request) {
   for (const assignment of assignments) {
     if (!assignment.shift || settings.mainBreakMinutes <= 0) continue;
     const shiftStart = toMinutes(assignment.shift.startTime); const shiftEnd = toMinutes(assignment.shift.endTime);
-    const slot = findSlot(assignment.employeeId, "MAIN", shiftStart + settings.mainBreakAfterMinutes, shiftEnd, settings.mainBreakMinutes);
+    const overlapEnd = Math.max(shiftStart, ...assignments.filter((other) => other.employeeId !== assignment.employeeId && other.shift && toMinutes(other.shift.startTime) < shiftEnd && toMinutes(other.shift.endTime) > shiftStart).map((other) => toMinutes(other.shift!.endTime)));
+    const latestMainStartForSplitBreak = overlapEnd - settings.mainBreakMinutes - settings.shortBreakDelayMinutes - settings.shortBreakMinutes;
+    const preferredMainStart = shiftStart + settings.mainBreakAfterMinutes;
+    const mainStart = Math.max(shiftStart, Math.min(preferredMainStart, latestMainStartForSplitBreak));
+    const slot = findSlot(assignment.employeeId, "MAIN", mainStart, shiftEnd, settings.mainBreakMinutes);
     if (!slot) { warnings.push(`No coverage-safe ${settings.mainBreakMinutes}-minute main break was available for ${assignment.employee.name}.`); continue; }
     breakRows.push({ date, employeeId: assignment.employeeId, type: "MAIN", startTime: toTime(slot.start), endTime: toTime(slot.end) });
   }
