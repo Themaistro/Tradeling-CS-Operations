@@ -10,6 +10,7 @@ import {
   Send,
   Settings,
   Sparkles,
+  TriangleAlert,
   Users,
 } from "lucide-react";
 
@@ -17,6 +18,7 @@ const navigation = [
   { href: "/overview", label: "Overview", icon: BarChart3 },
   { href: "/schedule", label: "Schedule", icon: CalendarDays },
   { href: "/tasks", label: "Daily Tasks", icon: ClipboardList },
+  { href: "/scenarios", label: "Scenarios", icon: TriangleAlert },
   { href: "/team", label: "Team", icon: Users },
   { href: "/settings", label: "Settings", icon: Settings },
 ];

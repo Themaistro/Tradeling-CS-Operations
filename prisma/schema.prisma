@@ -38,39 +38,53 @@ enum SlackPostStatus {
   FAILED
 }
 
+enum ScenarioType {
+  ABSENCE
+  DEMAND_SURGE
+  TRAINING
+  SYSTEM_OUTAGE
+  CUSTOM
+}
+
+enum ScenarioStatus {
+  ACTIVE
+  RESOLVED
+}
+
 model Employee {
-  id                String             @id @default(cuid())
-  name              String
-  slackId           String?            @unique
-  preferredShiftId  String?
-  preferredShift    Shift?             @relation("PreferredShift", fields: [preferredShiftId], references: [id], onDelete: SetNull)
-  isBilingual       Boolean            @default(false)
-  status            EmployeeStatus     @default(ACTIVE)
-  dayOffPreferences DayOffPreference[]
-  timeOff           TimeOff[]
-  shiftAssignments  ShiftAssignment[]
-  taskAssignments   TaskAssignment[]
-  breaks            BreakSchedule[]
-  acknowledgements  Acknowledgement[]
-  createdAt         DateTime           @default(now())
-  updatedAt         DateTime           @updatedAt
+  id                 String              @id @default(cuid())
+  name               String
+  slackId            String?             @unique
+  preferredShiftId   String?
+  preferredShift     Shift?              @relation("PreferredShift", fields: [preferredShiftId], references: [id], onDelete: SetNull)
+  isBilingual        Boolean             @default(false)
+  status             EmployeeStatus      @default(ACTIVE)
+  dayOffPreferences  DayOffPreference[]
+  timeOff            TimeOff[]
+  shiftAssignments   ShiftAssignment[]
+  taskAssignments    TaskAssignment[]
+  breaks             BreakSchedule[]
+  acknowledgements   Acknowledgement[]
+  operationScenarios OperationScenario[]
+  createdAt          DateTime            @default(now())
+  updatedAt          DateTime            @updatedAt
 
   @@index([status])
 }
 
 model Shift {
-  id                 String             @id @default(cuid())
+  id                 String            @id @default(cuid())
   name               String
   startTime          String
   endTime            String
-  color               String             @default("blue")
-  order               Int                @default(0)
-  active              Boolean            @default(true)
-  preferredEmployees Employee[]         @relation("PreferredShift")
-  staffingRules       StaffingRule[]
-  assignments         ShiftAssignment[]
-  createdAt           DateTime           @default(now())
-  updatedAt           DateTime           @updatedAt
+  color              String            @default("blue")
+  order              Int               @default(0)
+  active             Boolean           @default(true)
+  preferredEmployees Employee[]        @relation("PreferredShift")
+  staffingRules      StaffingRule[]
+  assignments        ShiftAssignment[]
+  createdAt          DateTime          @default(now())
+  updatedAt          DateTime          @updatedAt
 }
 
 model StaffingRule {
@@ -133,25 +147,48 @@ model ShiftAssignment {
   date             DateTime         @db.Date
   status           AssignmentStatus
   shiftId          String?
-  shift             Shift?           @relation(fields: [shiftId], references: [id], onDelete: SetNull)
-  source            String           @default("generated")
-  createdAt         DateTime         @default(now())
-  updatedAt         DateTime         @updatedAt
+  shift            Shift?           @relation(fields: [shiftId], references: [id], onDelete: SetNull)
+  source           String           @default("generated")
+  createdAt        DateTime         @default(now())
+  updatedAt        DateTime         @updatedAt
 
   @@unique([employeeId, date])
   @@index([date, status])
 }
 
 model TaskCategory {
-  id          String           @id @default(cuid())
-  name        String
-  icon        String           @default("📌")
-  color       String           @default("indigo")
-  order       Int              @default(0)
-  active      Boolean          @default(true)
-  assignments TaskAssignment[]
-  createdAt   DateTime         @default(now())
-  updatedAt   DateTime         @updatedAt
+  id                 String              @id @default(cuid())
+  name               String
+  icon               String              @default("📌")
+  color              String              @default("indigo")
+  order              Int                 @default(0)
+  active             Boolean             @default(true)
+  assignments        TaskAssignment[]
+  operationScenarios OperationScenario[]
+  createdAt          DateTime            @default(now())
+  updatedAt          DateTime            @updatedAt
+}
+
+model OperationScenario {
+  id                 String         @id @default(cuid())
+  title              String
+  type               ScenarioType
+  status             ScenarioStatus @default(ACTIVE)
+  startDate          DateTime       @db.Date
+  endDate            DateTime       @db.Date
+  employeeId         String?
+  employee           Employee?      @relation(fields: [employeeId], references: [id], onDelete: SetNull)
+  categoryId         String?
+  category           TaskCategory?  @relation(fields: [categoryId], references: [id], onDelete: SetNull)
+  staffingMultiplier Float          @default(1)
+  startTime          String?
+  endTime            String?
+  note               String?
+  createdAt          DateTime       @default(now())
+  updatedAt          DateTime       @updatedAt
+
+  @@index([startDate, endDate, status])
+  @@index([employeeId])
 }
 
 model TaskAssignment {
@@ -207,22 +244,22 @@ model SlackPostLog {
 }
 
 model AppSettings {
-  id                 String  @id @default("global")
-  timezone           String  @default("Asia/Dubai")
-  postTime           String  @default("08:00")
-  automationEnabled  Boolean @default(false)
-  slackChannelId     String  @default("")
-  slackMessageHeader String  @default("Customer Service Daily Schedule")
-  workingDays        String  @default("0,1,2,3,4,5,6")
-  weekStartsOn       Int     @default(0)
-  defaultBreakMinutes Int    @default(60)
-  projectStartDate    DateTime? @db.Date
-  scheduleBuildCutoff Int     @default(20)
-  splitDate           Int     @default(15)
-  generationScope     String  @default("full")
-  requireAcknowledgement Boolean @default(true)
-  includeBreaksInSlack Boolean @default(true)
-  includeNotesInSlack Boolean @default(true)
-  maxConsecutiveDays Int     @default(5)
-  updatedAt          DateTime @updatedAt
+  id                     String    @id @default("global")
+  timezone               String    @default("Asia/Dubai")
+  postTime               String    @default("08:00")
+  automationEnabled      Boolean   @default(false)
+  slackChannelId         String    @default("")
+  slackMessageHeader     String    @default("Customer Service Daily Schedule")
+  workingDays            String    @default("0,1,2,3,4,5,6")
+  weekStartsOn           Int       @default(0)
+  defaultBreakMinutes    Int       @default(60)
+  projectStartDate       DateTime? @db.Date
+  scheduleBuildCutoff    Int       @default(20)
+  splitDate              Int       @default(15)
+  generationScope        String    @default("full")
+  requireAcknowledgement Boolean   @default(true)
+  includeBreaksInSlack   Boolean   @default(true)
+  includeNotesInSlack    Boolean   @default(true)
+  maxConsecutiveDays     Int       @default(5)
+  updatedAt              DateTime  @updatedAt
 }
