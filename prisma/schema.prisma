@@ -43,6 +43,12 @@ enum BreakType {
   SHORT
 }
 
+enum WorkstreamMode {
+  EVERYONE
+  FOCUS
+  SECONDARY
+}
+
 model Employee {
   id                  String                      @id @default(cuid())
   name                String
@@ -146,19 +152,21 @@ model ShiftAssignment {
 }
 
 model TaskCategory {
-  id          String           @id @default(cuid())
-  name        String
-  icon        String           @default("📌")
-  color       String           @default("indigo")
-  order       Int              @default(0)
-  active      Boolean          @default(true)
-  accountId   String?
-  account     Account?         @relation(fields: [accountId], references: [id], onDelete: SetNull)
-  groupName   String?
-  isLive      Boolean          @default(false)
-  assignments TaskAssignment[]
-  createdAt   DateTime         @default(now())
-  updatedAt   DateTime         @updatedAt
+  id              String           @id @default(cuid())
+  name            String
+  icon            String           @default("📌")
+  color           String           @default("indigo")
+  order           Int              @default(0)
+  active          Boolean          @default(true)
+  accountId       String?
+  account         Account?         @relation(fields: [accountId], references: [id], onDelete: SetNull)
+  groupName       String?
+  isLive          Boolean          @default(false)
+  mode            WorkstreamMode   @default(SECONDARY)
+  defaultPriority Int              @default(2)
+  assignments     TaskAssignment[]
+  createdAt       DateTime         @default(now())
+  updatedAt       DateTime         @updatedAt
 }
 
 model TaskAssignment {
@@ -169,6 +177,9 @@ model TaskAssignment {
   categoryId String
   category   TaskCategory @relation(fields: [categoryId], references: [id], onDelete: Cascade)
   note       String?
+  priority   Int          @default(1)
+  startTime  String?
+  endTime    String?
   createdAt  DateTime     @default(now())
   updatedAt  DateTime     @updatedAt
 
@@ -264,25 +275,26 @@ model SlackPostLog {
 }
 
 model AppSettings {
-  id                     String    @id @default("global")
-  timezone               String    @default("Asia/Dubai")
-  postTime               String    @default("08:00")
-  automationEnabled      Boolean   @default(false)
-  slackChannelId         String    @default("")
-  slackMessageHeader     String    @default("Customer Service Daily Schedule")
-  weekStartsOn           Int       @default(0)
-  mainBreakMinutes       Int       @default(40)
-  shortBreakMinutes      Int       @default(20)
-  breakGapMinutes        Int       @default(10)
-  mainBreakAfterMinutes  Int       @default(240)
-  shortBreakDelayMinutes Int       @default(120)
-  projectStartDate       DateTime? @db.Date
-  scheduleBuildCutoff    Int       @default(20)
-  splitDate              Int       @default(15)
-  generationScope        String    @default("full")
-  requireAcknowledgement Boolean   @default(true)
-  includeBreaksInSlack   Boolean   @default(true)
-  includeNotesInSlack    Boolean   @default(true)
-  maxConsecutiveDays     Int       @default(5)
-  updatedAt              DateTime  @updatedAt
+  id                      String    @id @default("global")
+  timezone                String    @default("Asia/Dubai")
+  postTime                String    @default("08:00")
+  automationEnabled       Boolean   @default(false)
+  slackChannelId          String    @default("")
+  slackMessageHeader      String    @default("Customer Service Daily Schedule")
+  weekStartsOn            Int       @default(0)
+  mainBreakMinutes        Int       @default(40)
+  shortBreakMinutes       Int       @default(20)
+  breakGapMinutes         Int       @default(10)
+  maxConcurrentMainBreaks Int       @default(2)
+  mainBreakAfterMinutes   Int       @default(240)
+  shortBreakDelayMinutes  Int       @default(120)
+  projectStartDate        DateTime? @db.Date
+  scheduleBuildCutoff     Int       @default(20)
+  splitDate               Int       @default(15)
+  generationScope         String    @default("full")
+  requireAcknowledgement  Boolean   @default(true)
+  includeBreaksInSlack    Boolean   @default(true)
+  includeNotesInSlack     Boolean   @default(true)
+  maxConsecutiveDays      Int       @default(5)
+  updatedAt               DateTime  @updatedAt
 }

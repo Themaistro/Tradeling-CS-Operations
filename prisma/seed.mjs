@@ -24,14 +24,15 @@ async function main() {
     const account = await prisma.account.upsert({ where: { code: accountData.code }, create: accountData, update: {} });
     const workstreams = accountData.code === "TRADELING"
       ? [
-          ["Calls", "Phone", true], ["Chats", "Live channels", true], ["CS-Supp Chat", "Chat groups", true], ["Sales-CX Chat", "Chat groups", true], ["International-OMT-Supp", "Chat groups", true], ["Inbound", "Chat groups", true],
-          ["Stakeholder Emails", "Emails", false], ["Open Emails", "Emails", false], ["Returns & CX Escalations", "Cases", false], ["Internal Emails & Tickets", "Cases", false], ["Seller Verification", "Reviews", false], ["Social Reviews", "Reviews", false],
+          ["Calls", "Phone", true, "EVERYONE", 2], ["Chats", "Live channels", true, "FOCUS", 1], ["CS-Supp Chat", "Chat groups", false, "SECONDARY", 2], ["Sales-CX Chat", "Chat groups", false, "SECONDARY", 2], ["International-OMT-Supp", "Chat groups", false, "SECONDARY", 2], ["Inbound", "Chat groups", false, "SECONDARY", 2],
+          ["Stakeholder Emails", "Emails", false, "SECONDARY", 2], ["Open Emails", "Emails", false, "FOCUS", 1], ["Returns & CX Escalations", "Cases", false, "FOCUS", 1], ["Internal Emails & Tickets", "Cases", false, "FOCUS", 1], ["Seller Verification", "Reviews", false, "SECONDARY", 2], ["Social Reviews", "Reviews", false, "SECONDARY", 2],
         ]
-      : [["Calls", "Phone", true], ["Chats", "Live channels", true], ["Stakeholder Emails", "Emails", false], ["Open Emails", "Emails", false], ["Returns & CX Escalations", "Cases", false], ["Internal Emails & Tickets", "Cases", false]];
-    for (const [order, [name, groupName, isLive]] of workstreams.entries()) {
+      : [["Calls", "Phone", true, "EVERYONE", 2], ["Chats", "Live channels", true, "FOCUS", 1], ["Open Emails", "Emails", false, "FOCUS", 1], ["Internal Emails & Tickets", "Cases", false, "FOCUS", 1]];
+    await prisma.taskCategory.updateMany({ where: { accountId: account.id }, data: { active: false } });
+    for (const [order, [name, groupName, isLive, mode, defaultPriority]] of workstreams.entries()) {
       const existing = await prisma.taskCategory.findFirst({ where: { accountId: account.id, name } });
-      if (!existing) await prisma.taskCategory.create({ data: { accountId: account.id, name, groupName, isLive, order } });
-      else await prisma.taskCategory.update({ where: { id: existing.id }, data: { groupName, isLive, active: true, order } });
+      if (!existing) await prisma.taskCategory.create({ data: { accountId: account.id, name, groupName, isLive, mode, defaultPriority, order } });
+      else await prisma.taskCategory.update({ where: { id: existing.id }, data: { groupName, isLive, mode, defaultPriority, active: true, order } });
     }
     for (const dayOfWeek of days) await prisma.accountOperatingWindow.upsert({ where: { accountId_dayOfWeek_startTime_endTime: { accountId: account.id, dayOfWeek, startTime, endTime } }, create: { accountId: account.id, dayOfWeek, startTime, endTime }, update: {} });
     for (const dayOfWeek of days) {

@@ -9,12 +9,15 @@ type Daily = {
     employee: { id: string; name: string };
     shift: { name: string };
   }[];
-  categories: { id: string; name: string; icon: string }[];
+  categories: { id: string; name: string; icon: string; defaultPriority: number }[];
   tasks: {
     id: string;
     employeeId: string;
     categoryId: string;
     note: string | null;
+    priority: number;
+    startTime: string | null;
+    endTime: string | null;
     category: { name: string; icon: string };
   }[];
   breaks: { employeeId: string; type: "MAIN" | "SHORT"; startTime: string; endTime: string }[];
@@ -64,6 +67,7 @@ export default function TasksPage() {
         type: f.get("type"),
         categoryId: f.get("categoryId"),
         note: f.get("note"),
+        priority: Number(f.get("priority")),
       }),
     });
     setMessage(r.ok ? "Task assignment saved." : (await r.json()).error);
@@ -79,6 +83,7 @@ export default function TasksPage() {
       body: JSON.stringify({
         date,
         employeeId,
+        type: f.get("type"),
         startTime: f.get("start"),
         endTime: f.get("end"),
       }),
@@ -180,8 +185,9 @@ export default function TasksPage() {
                   {tasks.map((t) => (
                     <div key={t.id} className="relative rounded-xl bg-slate-50 p-3 pr-10">
                       <b className="text-sm">
-                        {t.category.icon} {t.category.name}
+                        {t.category.icon} {t.category.name} · P{t.priority}
                       </b>
+                      {t.startTime && t.endTime && <span className="ml-2 text-xs font-semibold text-slate-400">{t.startTime}–{t.endTime}</span>}
                       {t.note && (
                         <p className="mt-1 text-sm text-slate-500">{t.note}</p>
                       )}
@@ -191,7 +197,7 @@ export default function TasksPage() {
                 </div>
                 <form
                   onSubmit={(e) => addTask(e, a.employee.id)}
-                  className="mt-4 grid gap-2 sm:grid-cols-[1fr_1.4fr_auto]"
+                  className="mt-4 grid gap-2 sm:grid-cols-[1fr_90px_1.4fr_auto]"
                 >
                   <select
                     required
@@ -205,6 +211,7 @@ export default function TasksPage() {
                       </option>
                     ))}
                   </select>
+                  <select name="priority" defaultValue="1" className="rounded-xl border border-slate-200 px-3 py-2 text-sm"><option value="1">P1</option><option value="2">P2</option></select>
                   <input
                     name="note"
                     placeholder="Optional note"

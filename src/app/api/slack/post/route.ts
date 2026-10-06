@@ -47,19 +47,18 @@ export async function POST(request: Request) {
       { error: "There is no approved working roster for this date." },
       { status: 400 },
     );
-  const lines = assignments.map((a) => {
-    const assigned =
-      tasks
-        .filter((t) => t.employeeId === a.employeeId)
-        .map(
-          (t) =>
-            `${t.category.icon} ${t.category.name}${settings.includeNotesInSlack && t.note ? ` — ${t.note}` : ""}`,
-        )
-        .join(", ") || "No tasks assigned";
-    const employeeBreaks = breaks.filter((b) => b.employeeId === a.employeeId).sort((left,right)=>left.startTime.localeCompare(right.startTime));
-    const breakText = employeeBreaks.map((item)=>`${item.type === "MAIN" ? "Main" : "Short"} ${item.startTime}–${item.endTime}`).join(" · ");
-    return `• *${a.employee.name}* · ${a.shift?.name || "Shift"}\n  ${assigned}${settings.includeBreaksInSlack && breakText ? `\n  ☕ ${breakText}` : ""}`;
+  const mention = (employeeId: string) => { const assignment = assignments.find((item) => item.employeeId === employeeId); return assignment?.employee.slackId ? `<@${assignment.employee.slackId}>` : `*${assignment?.employee.name ?? "Unassigned"}*`; };
+  const taskGroups = Map.groupBy(tasks, (task) => `${task.category.name}|${task.startTime ?? ""}|${task.endTime ?? ""}`);
+  const taskLines = [...taskGroups.values()].map((group) => {
+    const task = group[0];
+    const people = group.map((item) => `${mention(item.employeeId)} P${item.priority}`).join(", ");
+    const period = task.startTime && task.endTime ? ` · ${task.startTime}–${task.endTime}` : "";
+    const context = settings.includeNotesInSlack && task.note ? ` _(${task.note})_` : "";
+    return `*${task.category.name}*${period}: ${people}${context}`;
   });
+  const shiftLine = assignments.map((assignment) => `${mention(assignment.employeeId)} · ${assignment.shift?.name ?? "Shift"} ${assignment.shift?.startTime ?? ""}–${assignment.shift?.endTime ?? ""}`).join("\n");
+  const breakGroups = Map.groupBy(breaks.sort((left, right) => left.startTime.localeCompare(right.startTime)), (item) => `${item.type}|${item.startTime}|${item.endTime}`);
+  const breakLines = [...breakGroups.values()].map((group) => `• ${group[0].type === "MAIN" ? "Main" : "Short"} ${group[0].startTime}–${group[0].endTime}: ${group.map((item) => mention(item.employeeId)).join(", ")}`);
   try {
     const result = await client.chat.postMessage({
       channel: settings.slackChannelId,
@@ -76,7 +75,10 @@ export async function POST(request: Request) {
             text: `*${new Intl.DateTimeFormat("en-AE", { timeZone: settings.timezone, weekday: "long", year: "numeric", month: "long", day: "numeric" }).format(date)}*`,
           },
         },
-        { type: "section", text: { type: "mrkdwn", text: lines.join("\n\n") } },
+        { type: "section", text: { type: "mrkdwn", text: `*Shift coverage*\n${shiftLine}` } },
+        { type: "divider" },
+        { type: "section", text: { type: "mrkdwn", text: `*Task ownership*\n${taskLines.join("\n\n")}` } },
+        ...(settings.includeBreaksInSlack && breakLines.length ? [{ type: "divider" as const }, { type: "section" as const, text: { type: "mrkdwn" as const, text: `*Break plan*\n${breakLines.join("\n")}` } }] : []),
         ...(settings.requireAcknowledgement
           ? [
               {

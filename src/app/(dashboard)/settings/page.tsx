@@ -27,6 +27,7 @@ type Settings = {
   mainBreakMinutes: number;
   shortBreakMinutes: number;
   breakGapMinutes: number;
+  maxConcurrentMainBreaks: number;
   mainBreakAfterMinutes: number;
   shortBreakDelayMinutes: number;
   requireAcknowledgement: boolean;
@@ -430,10 +431,11 @@ export default function SettingsPage() {
                       ["Main break", "mainBreakMinutes", settings.mainBreakMinutes],
                       ["Short break", "shortBreakMinutes", settings.shortBreakMinutes],
                       ["Gap between agents", "breakGapMinutes", settings.breakGapMinutes],
+                      ["Agents per main-break slot", "maxConcurrentMainBreaks", settings.maxConcurrentMainBreaks],
                       ["Main break after shift start", "mainBreakAfterMinutes", settings.mainBreakAfterMinutes],
                       ["Short break after main break", "shortBreakDelayMinutes", settings.shortBreakDelayMinutes],
                     ].map(([label, key, value]) => (
-                      <label key={String(key)} className="text-xs font-bold text-slate-600">{label}<div className="relative"><input type="number" min="0" max="600" value={Number(value)} onChange={(event)=>setSettings({...settings,[String(key)]:Number(event.target.value)})} className={field}/><span className="absolute bottom-3 right-4 text-xs text-slate-400">minutes</span></div></label>
+                      <label key={String(key)} className="text-xs font-bold text-slate-600">{label}<div className="relative"><input type="number" min={key === "maxConcurrentMainBreaks" ? 1 : 0} max={key === "maxConcurrentMainBreaks" ? 10 : 600} value={Number(value)} onChange={(event)=>setSettings({...settings,[String(key)]:Number(event.target.value)})} className={field}/><span className="absolute bottom-3 right-4 text-xs text-slate-400">{key === "maxConcurrentMainBreaks" ? "agents" : "minutes"}</span></div></label>
                     ))}
                   </div>
                   <div className="mt-4 rounded-xl bg-emerald-50 p-4 text-sm text-emerald-800"><b>Total entitlement:</b> {settings.mainBreakMinutes + settings.shortBreakMinutes} minutes per working agent.</div>

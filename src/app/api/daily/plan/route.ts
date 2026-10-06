@@ -33,7 +33,7 @@ export async function POST(request: Request) {
   if ((existingTasks || existingBreaks) && !parsed.data.replace) return NextResponse.json({ error: "This day already contains tasks or breaks.", code: "PLAN_EXISTS", existingTasks, existingBreaks }, { status: 409 });
   if (!categories.length) return NextResponse.json({ error: "Add at least one active task category first." }, { status: 409 });
 
-  const taskRows: { date: Date; employeeId: string; categoryId: string; note: string }[] = [];
+  const taskRows: { date: Date; employeeId: string; categoryId: string; note: string; priority: number; startTime: string | null; endTime: string | null }[] = [];
   const warnings: string[] = [];
   const byShift = Map.groupBy(assignments, (assignment) => assignment.shiftId ?? "unassigned");
   for (const shiftAssignments of byShift.values()) {
@@ -41,29 +41,44 @@ export async function POST(request: Request) {
     if (!shift) continue;
     const relevantAccounts = accounts.filter((account) => account.coverageRequirements.some((requirement) => requirement.dayOfWeek === weekday && shift.startTime <= requirement.startTime && shift.endTime >= requirement.endTime));
     const relevantAccountIds = new Set(relevantAccounts.map((account) => account.id));
-    const relevantCategories = categories.filter((category) => !category.accountId || relevantAccountIds.has(category.accountId)).sort((a, b) => Number(b.isLive) - Number(a.isLive) || a.order - b.order);
-    let cursor = 0;
-    for (const category of relevantCategories) {
-      const account = category.accountId ? relevantAccounts.find((item) => item.id === category.accountId) : null;
-      const capable = account ? new Set(account.employeeCapabilities.map((item) => item.employeeId)) : null;
-      const candidates = shiftAssignments.filter((assignment) => !capable || capable.has(assignment.employeeId));
-      if (!candidates.length) { warnings.push(`${category.name} has no eligible scheduled agent on ${shift.name}.`); continue; }
-      const assignment = candidates[cursor % candidates.length]; cursor += 1;
-      taskRows.push({ date, employeeId: assignment.employeeId, categoryId: category.id, note: "Automatically assigned from the active operation workstreams." });
-    }
-    const fallback = relevantCategories.find((category) => !category.isLive) ?? relevantCategories[0];
-    if (fallback) shiftAssignments.forEach((assignment) => {
-      if (!taskRows.some((item) => item.employeeId === assignment.employeeId)) taskRows.push({ date, employeeId: assignment.employeeId, categoryId: fallback.id, note: "Automatically assigned from the active operation workstreams." });
+    const relevantCategories = categories.filter((category) => category.accountId && relevantAccountIds.has(category.accountId));
+    const grouped = Map.groupBy(relevantCategories, (category) => category.name.toLowerCase().replace(/[^a-z0-9]/g, ""));
+    const queues = [...grouped.values()].map((items) => {
+      const accountNames = relevantAccounts.filter((account) => items.some((item) => item.accountId === account.id)).map((account) => account.name);
+      const requirements = relevantAccounts.flatMap((account) => account.coverageRequirements.filter((requirement) => requirement.dayOfWeek === weekday && shift.startTime <= requirement.startTime && shift.endTime >= requirement.endTime));
+      return { category: items[0], accountNames, startTime: requirements.map((item) => item.startTime).sort()[0] ?? shift.startTime, endTime: requirements.map((item) => item.endTime).sort().at(-1) ?? shift.endTime };
     });
-    const liveCount = relevantCategories.filter((category) => category.isLive).length;
-    if (liveCount > shiftAssignments.length) warnings.push(`${shift.name} has more live workstreams than agents. Shared coverage was assigned and should be monitored.`);
+    const eligible = (queue: (typeof queues)[number]) => {
+      const accountIds = grouped.get(queue.category.name.toLowerCase().replace(/[^a-z0-9]/g, ""))?.map((item) => item.accountId).filter(Boolean) as string[];
+      return shiftAssignments.filter((assignment) => accountIds.every((accountId) => accounts.find((account) => account.id === accountId)?.employeeCapabilities.some((capability) => capability.employeeId === assignment.employeeId)));
+    };
+    const focusOwners = new Set<string>();
+    let cursor = 0;
+    for (const queue of queues.filter((item) => item.category.mode === "FOCUS")) {
+      const candidates = eligible(queue);
+      if (!candidates.length) { warnings.push(`${queue.category.name} has no eligible scheduled agent on ${shift.name}.`); continue; }
+      const unassigned = candidates.filter((assignment) => !focusOwners.has(assignment.employeeId));
+      const assignment = (unassigned.length ? unassigned : candidates)[cursor % (unassigned.length || candidates.length)]; cursor += 1;
+      if (!unassigned.length) warnings.push(`${assignment.employee.name} must cover more than one focus queue on ${shift.name} because no additional eligible agent is available.`);
+      focusOwners.add(assignment.employeeId);
+      taskRows.push({ date, employeeId: assignment.employeeId, categoryId: queue.category.id, priority: 1, startTime: queue.startTime, endTime: queue.endTime, note: `${queue.accountNames.join(" + ")} · primary focus` });
+    }
+    for (const queue of queues.filter((item) => item.category.mode === "EVERYONE")) for (const assignment of eligible(queue)) {
+      taskRows.push({ date, employeeId: assignment.employeeId, categoryId: queue.category.id, priority: focusOwners.has(assignment.employeeId) ? 2 : 1, startTime: queue.startTime, endTime: queue.endTime, note: queue.accountNames.join(" + ") });
+    }
+    for (const queue of queues.filter((item) => item.category.mode === "SECONDARY")) {
+      const candidates = eligible(queue);
+      if (!candidates.length) { warnings.push(`${queue.category.name} has no eligible scheduled agent on ${shift.name}.`); continue; }
+      const assignment = candidates.sort((left, right) => taskRows.filter((item) => item.employeeId === left.employeeId).length - taskRows.filter((item) => item.employeeId === right.employeeId).length)[0];
+      taskRows.push({ date, employeeId: assignment.employeeId, categoryId: queue.category.id, priority: queue.category.defaultPriority, startTime: queue.startTime, endTime: queue.endTime, note: queue.accountNames.join(" + ") });
+    }
   }
 
   const breakRows: { date: Date; employeeId: string; type: "MAIN" | "SHORT"; startTime: string; endTime: string }[] = [];
   const findSlot = (employeeId: string, type: "MAIN" | "SHORT", earliest: number, latestEnd: number, duration: number) => {
     for (let start = earliest; start + duration <= latestEnd; start += 10) {
       const end = start + duration;
-      const conflicts = type === "MAIN" && breakRows.some((item) => item.type === "MAIN" && toMinutes(item.startTime) < end + settings.breakGapMinutes && toMinutes(item.endTime) + settings.breakGapMinutes > start);
+      const conflicts = type === "MAIN" && breakRows.filter((item) => item.type === "MAIN" && toMinutes(item.startTime) < end + settings.breakGapMinutes && toMinutes(item.endTime) + settings.breakGapMinutes > start).length >= settings.maxConcurrentMainBreaks;
       if (conflicts) continue;
       const covered = assignments.some((assignment) => assignment.employeeId !== employeeId && assignment.shift && toMinutes(assignment.shift.startTime) <= start && toMinutes(assignment.shift.endTime) >= end && !breakRows.some((item) => item.employeeId === assignment.employeeId && toMinutes(item.startTime) < end && toMinutes(item.endTime) > start));
       if (covered) return { start, end };

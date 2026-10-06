@@ -22,8 +22,8 @@ export async function POST(request: Request) {
   const expected = input.type === "MAIN" ? settings.mainBreakMinutes : settings.shortBreakMinutes;
   if (end - start !== expected) return NextResponse.json({ error: `${input.type === "MAIN" ? "Main" : "Short"} break must be exactly ${expected} minutes.` }, { status: 400 });
   const gap = settings.breakGapMinutes;
-  const conflict = input.type === "MAIN" ? existingBreaks.find((item) => item.type === "MAIN" && item.employeeId !== input.employeeId && toMinutes(item.startTime) < end + gap && toMinutes(item.endTime) + gap > start) : null;
-  if (conflict) return NextResponse.json({ error: `Keep at least ${gap} minutes between agent breaks to protect live-channel coverage.` }, { status: 409 });
+  const concurrentMainBreaks = input.type === "MAIN" ? existingBreaks.filter((item) => item.type === "MAIN" && item.employeeId !== input.employeeId && toMinutes(item.startTime) < end + gap && toMinutes(item.endTime) + gap > start).length : 0;
+  if (concurrentMainBreaks >= settings.maxConcurrentMainBreaks) return NextResponse.json({ error: `A maximum of ${settings.maxConcurrentMainBreaks} agents can share a main-break slot. Keep ${gap} minutes between break groups.` }, { status: 409 });
   const hasCoverage = assignments.some((assignment) => assignment.employeeId !== input.employeeId && assignment.shift && toMinutes(assignment.shift.startTime) <= start && toMinutes(assignment.shift.endTime) >= end && !existingBreaks.some((item) => item.employeeId === assignment.employeeId && toMinutes(item.startTime) < end && toMinutes(item.endTime) > start));
   if (!hasCoverage) return NextResponse.json({ error: "No other scheduled agent is available to cover live calls and chats during this break." }, { status: 409 });
   return NextResponse.json(await prisma.breakSchedule.upsert({ where: { date_employeeId_type: { date, employeeId: input.employeeId, type: input.type } }, create: { date, employeeId: input.employeeId, type: input.type, startTime: input.startTime, endTime: input.endTime }, update: { startTime: input.startTime, endTime: input.endTime } }));

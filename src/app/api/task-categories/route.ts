@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 import { z } from "zod";
 import { prisma } from "@/lib/db/prisma";
 
-const schema = z.object({ name: z.string().trim().min(2).max(80), icon: z.string().trim().max(8).default("📌"), accountId:z.string().nullable().optional(),groupName:z.string().trim().max(80).nullable().optional(),isLive:z.boolean().default(false) });
+const schema = z.object({ name: z.string().trim().min(2).max(80), icon: z.string().trim().max(8).default("📌"), accountId:z.string().nullable().optional(),groupName:z.string().trim().max(80).nullable().optional(),isLive:z.boolean().default(false),mode:z.enum(["EVERYONE","FOCUS","SECONDARY"]).default("SECONDARY"),defaultPriority:z.number().int().min(1).max(2).default(2) });
 export async function POST(request: Request) {
   const parsed = schema.safeParse(await request.json());
   if (!parsed.success) return NextResponse.json({ error: "Enter a valid category name." }, { status: 400 });
