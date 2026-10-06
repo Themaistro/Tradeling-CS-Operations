@@ -15,11 +15,11 @@ import {
 } from "lucide-react";
 
 const navigation = [
+  { href: "/operations", label: "Operations", icon: Building2 },
+  { href: "/team", label: "Team", icon: Users },
   { href: "/overview", label: "Overview", icon: BarChart3 },
   { href: "/schedule", label: "Schedule", icon: CalendarDays },
   { href: "/tasks", label: "Daily Tasks", icon: ClipboardList },
-  { href: "/operations", label: "Operations", icon: Building2 },
-  { href: "/team", label: "Team", icon: Users },
   { href: "/settings", label: "Settings", icon: Settings },
 ];
 
