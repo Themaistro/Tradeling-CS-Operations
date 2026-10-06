@@ -1,0 +1,218 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum EmployeeStatus {
+  ACTIVE
+  INACTIVE
+}
+
+enum ScheduleStatus {
+  DRAFT
+  APPROVED
+  PUBLISHED
+}
+
+enum AssignmentStatus {
+  WORKING
+  OFF
+  PTO
+  SICK
+}
+
+enum TimeOffType {
+  PTO
+  SICK
+  UNPAID
+  OTHER
+}
+
+enum SlackPostStatus {
+  PENDING
+  SENT
+  FAILED
+}
+
+model Employee {
+  id                String             @id @default(cuid())
+  name              String
+  slackId           String?            @unique
+  preferredShiftId  String?
+  preferredShift    Shift?             @relation("PreferredShift", fields: [preferredShiftId], references: [id], onDelete: SetNull)
+  isBilingual       Boolean            @default(false)
+  status            EmployeeStatus     @default(ACTIVE)
+  dayOffPreferences DayOffPreference[]
+  timeOff           TimeOff[]
+  shiftAssignments  ShiftAssignment[]
+  taskAssignments   TaskAssignment[]
+  breaks            BreakSchedule[]
+  acknowledgements  Acknowledgement[]
+  createdAt         DateTime           @default(now())
+  updatedAt         DateTime           @updatedAt
+
+  @@index([status])
+}
+
+model Shift {
+  id                 String             @id @default(cuid())
+  name               String
+  startTime          String
+  endTime            String
+  color               String             @default("blue")
+  order               Int                @default(0)
+  active              Boolean            @default(true)
+  preferredEmployees Employee[]         @relation("PreferredShift")
+  staffingRules       StaffingRule[]
+  assignments         ShiftAssignment[]
+  createdAt           DateTime           @default(now())
+  updatedAt           DateTime           @updatedAt
+}
+
+model StaffingRule {
+  id               String @id @default(cuid())
+  dayOfWeek        Int
+  shiftId          String
+  shift            Shift  @relation(fields: [shiftId], references: [id], onDelete: Cascade)
+  minimumStaff     Int    @default(0)
+  minimumBilingual Int    @default(0)
+  calls            Int    @default(0)
+  chats            Int    @default(0)
+  tickets          Int    @default(0)
+
+  @@unique([dayOfWeek, shiftId])
+}
+
+model DayOffPreference {
+  id         String   @id @default(cuid())
+  employeeId String
+  employee   Employee @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+  rank       Int
+  dayOfWeek  Int
+
+  @@unique([employeeId, rank, dayOfWeek])
+}
+
+model TimeOff {
+  id         String      @id @default(cuid())
+  employeeId String
+  employee   Employee    @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+  date       DateTime    @db.Date
+  type       TimeOffType @default(PTO)
+  note       String?
+  createdAt  DateTime    @default(now())
+
+  @@unique([employeeId, date])
+  @@index([date])
+}
+
+model SchedulePeriod {
+  id          String            @id @default(cuid())
+  year        Int
+  month       Int
+  status      ScheduleStatus    @default(DRAFT)
+  generatedAt DateTime?
+  approvedAt  DateTime?
+  assignments ShiftAssignment[]
+  createdAt   DateTime          @default(now())
+  updatedAt   DateTime          @updatedAt
+
+  @@unique([year, month])
+}
+
+model ShiftAssignment {
+  id               String           @id @default(cuid())
+  schedulePeriodId String
+  schedulePeriod   SchedulePeriod   @relation(fields: [schedulePeriodId], references: [id], onDelete: Cascade)
+  employeeId       String
+  employee         Employee         @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+  date             DateTime         @db.Date
+  status           AssignmentStatus
+  shiftId          String?
+  shift             Shift?           @relation(fields: [shiftId], references: [id], onDelete: SetNull)
+  source            String           @default("generated")
+  createdAt         DateTime         @default(now())
+  updatedAt         DateTime         @updatedAt
+
+  @@unique([employeeId, date])
+  @@index([date, status])
+}
+
+model TaskCategory {
+  id          String           @id @default(cuid())
+  name        String
+  icon        String           @default("📌")
+  color       String           @default("indigo")
+  order       Int              @default(0)
+  active      Boolean          @default(true)
+  assignments TaskAssignment[]
+  createdAt   DateTime         @default(now())
+  updatedAt   DateTime         @updatedAt
+}
+
+model TaskAssignment {
+  id         String       @id @default(cuid())
+  date       DateTime     @db.Date
+  employeeId String
+  employee   Employee     @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+  categoryId String
+  category   TaskCategory @relation(fields: [categoryId], references: [id], onDelete: Cascade)
+  note       String?
+  createdAt  DateTime     @default(now())
+  updatedAt  DateTime     @updatedAt
+
+  @@unique([date, employeeId, categoryId])
+  @@index([date])
+}
+
+model BreakSchedule {
+  id         String   @id @default(cuid())
+  date       DateTime @db.Date
+  employeeId String
+  employee   Employee @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+  startTime  String
+  endTime    String
+
+  @@unique([date, employeeId])
+  @@index([date])
+}
+
+model Acknowledgement {
+  id             String   @id @default(cuid())
+  employeeId     String
+  employee       Employee @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+  taskCategoryId String
+  scheduleDate   DateTime @db.Date
+  slackMessageTs String?
+  acknowledgedAt DateTime @default(now())
+
+  @@unique([employeeId, taskCategoryId, scheduleDate])
+}
+
+model SlackPostLog {
+  id           String          @id @default(cuid())
+  scheduleDate DateTime        @db.Date
+  channelId    String
+  messageTs    String?
+  status       SlackPostStatus @default(PENDING)
+  error        String?
+  postedAt     DateTime?
+  createdAt    DateTime        @default(now())
+
+  @@index([scheduleDate])
+}
+
+model AppSettings {
+  id                 String  @id @default("global")
+  timezone           String  @default("Asia/Dubai")
+  postTime           String  @default("08:00")
+  automationEnabled  Boolean @default(false)
+  slackChannelId     String  @default("")
+  slackMessageHeader String  @default("Customer Service Daily Schedule")
+  maxConsecutiveDays Int     @default(5)
+  updatedAt          DateTime @updatedAt
+}

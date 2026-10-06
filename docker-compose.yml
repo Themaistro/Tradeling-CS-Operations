@@ -1,0 +1,35 @@
+services:
+  database:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: tradeling_cs_operations
+      POSTGRES_USER: tradeling
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-local-development-password}
+    volumes:
+      - operations_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U tradeling -d tradeling_cs_operations"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+  app:
+    build: .
+    restart: unless-stopped
+    ports: ["3000:3000"]
+    environment:
+      DATABASE_URL: postgresql://tradeling:${POSTGRES_PASSWORD:-local-development-password}@database:5432/tradeling_cs_operations
+      ADMIN_USERNAME: ${ADMIN_USERNAME:-admin}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:-admin}
+      SESSION_SECRET: ${SESSION_SECRET:-replace-this-before-deployment}
+      SLACK_BOT_TOKEN: ${SLACK_BOT_TOKEN:-}
+      SLACK_APP_TOKEN: ${SLACK_APP_TOKEN:-}
+    depends_on:
+      database: { condition: service_healthy }
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://127.0.0.1:3000/api/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+volumes:
+  operations_data:
