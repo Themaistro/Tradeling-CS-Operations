@@ -16,7 +16,7 @@ services:
   app:
     build: .
     restart: unless-stopped
-    ports: ["3000:3000"]
+    ports: ["${APP_PORT:-3001}:3000"]
     environment:
       DATABASE_URL: postgresql://tradeling:${POSTGRES_PASSWORD:-local-development-password}@database:5432/tradeling_cs_operations
       ADMIN_USERNAME: ${ADMIN_USERNAME:-admin}

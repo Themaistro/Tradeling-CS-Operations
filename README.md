@@ -20,15 +20,16 @@ This is a new application that brings together the strongest parts of the existi
 1. Copy `.env.example` to `.env`.
 2. Set a strong administrator password and session secret.
 3. Run `docker compose up --build`.
-4. Open `http://localhost:3000`.
+4. Open `http://localhost:3001`.
 
 Docker starts both the application and its PostgreSQL database. Data is kept in a named volume, so restarting the containers does not reset the application.
+Port 3001 is used by default so this app can run beside the original Task Bot on port 3000. Set `APP_PORT` to use another port.
 
 The default local login is `admin` / `admin`. Change it before sharing the app with anyone.
 
 ## Run for development
 
-Requirements: Node.js 20.9 or newer and PostgreSQL 16 or newer.
+Requirements: Node.js 22.19 or newer and PostgreSQL 16 or newer.
 
 ```bash
 npm install
