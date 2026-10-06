@@ -26,6 +26,11 @@ type Settings = {
   workingDays: string;
   weekStartsOn: number;
   defaultBreakMinutes: number;
+  mainBreakMinutes: number;
+  shortBreakMinutes: number;
+  breakGapMinutes: number;
+  mainBreakAfterMinutes: number;
+  shortBreakDelayMinutes: number;
   requireAcknowledgement: boolean;
   includeBreaksInSlack: boolean;
   includeNotesInSlack: boolean;
@@ -677,29 +682,20 @@ export default function SettingsPage() {
                   </form>
                 </div>
                 <div>
-                  <Label
-                    title="Default break length"
-                    helper="Suggested when a break is added to a daily assignment"
-                  >
-                    <div className="relative">
-                      <input
-                        type="number"
-                        min="0"
-                        max="240"
-                        value={settings.defaultBreakMinutes}
-                        onChange={(e) =>
-                          setSettings({
-                            ...settings,
-                            defaultBreakMinutes: Number(e.target.value),
-                          })
-                        }
-                        className={field}
-                      />
-                      <span className="absolute bottom-3 right-4 text-xs text-slate-400">
-                        minutes
-                      </span>
-                    </div>
-                  </Label>
+                  <p className="text-sm font-bold text-slate-700">Break entitlement and coverage</p>
+                  <p className="mt-1 text-xs text-slate-500">Breaks are staggered automatically and require another active agent to cover live calls and chats.</p>
+                  <div className="mt-4 grid gap-4 sm:grid-cols-2">
+                    {[
+                      ["Main break", "mainBreakMinutes", settings.mainBreakMinutes],
+                      ["Short break", "shortBreakMinutes", settings.shortBreakMinutes],
+                      ["Gap between agents", "breakGapMinutes", settings.breakGapMinutes],
+                      ["Main break after shift start", "mainBreakAfterMinutes", settings.mainBreakAfterMinutes],
+                      ["Short break after main break", "shortBreakDelayMinutes", settings.shortBreakDelayMinutes],
+                    ].map(([label, key, value]) => (
+                      <label key={String(key)} className="text-xs font-bold text-slate-600">{label}<div className="relative"><input type="number" min="0" max="600" value={Number(value)} onChange={(event)=>{const next=Number(event.target.value);setSettings({...settings,[String(key)]:next,defaultBreakMinutes:key==="mainBreakMinutes"?next+settings.shortBreakMinutes:key==="shortBreakMinutes"?settings.mainBreakMinutes+next:settings.defaultBreakMinutes})}} className={field}/><span className="absolute bottom-3 right-4 text-xs text-slate-400">minutes</span></div></label>
+                    ))}
+                  </div>
+                  <div className="mt-4 rounded-xl bg-emerald-50 p-4 text-sm text-emerald-800"><b>Total entitlement:</b> {settings.mainBreakMinutes + settings.shortBreakMinutes} minutes per working agent.</div>
                   <label className="mt-5 flex gap-3 rounded-xl border border-slate-200 p-4">
                     <input
                       type="checkbox"

@@ -7,9 +7,10 @@ export async function GET(request: Request) {
   if (!Number.isInteger(year) || !Number.isInteger(month) || month < 1 || month > 12) return NextResponse.json({ error: "Invalid month." }, { status: 400 });
   const period = await prisma.schedulePeriod.findUnique({ where: { year_month: { year, month } }, include: { assignments: { include: { employee: true, shift: true }, orderBy: { date: "asc" } } } });
   if (!period) return NextResponse.json(null);
-  const [rules, settings] = await Promise.all([
+  const [rules, settings, accounts] = await Promise.all([
     prisma.staffingRule.findMany({ include: { shift: true } }),
     prisma.appSettings.upsert({ where: { id: "global" }, create: { id: "global" }, update: {} }),
+    prisma.account.findMany({ where: { active: true }, include: { coverageRequirements: true, employeeCapabilities: true } }),
   ]);
   const operatingDays = new Set(settings.workingDays.split(",").map(Number));
   const warnings: { date: string; shiftId: string; severity: "critical"; code: string; message: string }[] = [];
@@ -23,6 +24,13 @@ export async function GET(request: Request) {
       if (staffed.length < rule.minimumStaff) warnings.push({ date, shiftId: rule.shiftId, severity: "critical", code: "STAFF_SHORTAGE", message: `${rule.shift.name} needs ${rule.minimumStaff - staffed.length} more team member(s).` });
       const bilingual = staffed.filter((assignment) => assignment.employee.isBilingual).length;
       if (bilingual < rule.minimumBilingual) warnings.push({ date, shiftId: rule.shiftId, severity: "critical", code: "BILINGUAL_SHORTAGE", message: `${rule.shift.name} needs ${rule.minimumBilingual - bilingual} more bilingual team member(s).` });
+    }
+    for (const account of accounts) for (const requirement of account.coverageRequirements.filter((item)=>item.dayOfWeek===weekday)) {
+      const capable = new Set(account.employeeCapabilities.map((item)=>item.employeeId));
+      const covered = working.filter((assignment)=>assignment.date.toISOString().slice(0,10)===date&&assignment.shift&&assignment.shift.startTime<=requirement.startTime&&assignment.shift.endTime>=requirement.endTime&&capable.has(assignment.employeeId));
+      if(covered.length<requirement.minimumStaff)warnings.push({date,shiftId:`account:${account.id}`,severity:"critical",code:"STAFF_SHORTAGE",message:`${account.name} ${requirement.startTime}–${requirement.endTime} needs ${requirement.minimumStaff-covered.length} more qualified agent(s).`});
+      const bilingual=covered.filter((assignment)=>assignment.employee.isBilingual).length;
+      if(bilingual<requirement.minimumBilingual)warnings.push({date,shiftId:`account:${account.id}`,severity:"critical",code:"BILINGUAL_SHORTAGE",message:`${account.name} ${requirement.startTime}–${requirement.endTime} needs ${requirement.minimumBilingual-bilingual} more bilingual agent(s).`});
     }
   }
   return NextResponse.json({ ...period, warnings });
@@ -59,14 +67,15 @@ export async function PATCH(request: Request) {
   if (!["DRAFT", "APPROVED", "PUBLISHED"].includes(status)) return NextResponse.json({ error: "Invalid schedule status." }, { status: 400 });
   const key = { year: Number(year), month: Number(month) };
   if (!Number.isInteger(key.year) || !Number.isInteger(key.month) || key.month < 1 || key.month > 12) return NextResponse.json({ error: "Invalid month." }, { status: 400 });
-  const current = await prisma.schedulePeriod.findUnique({ where: { year_month: key }, include: { assignments: { include: { employee: true } } } });
+  const current = await prisma.schedulePeriod.findUnique({ where: { year_month: key }, include: { assignments: { include: { employee: true, shift: true } } } });
   if (!current) return NextResponse.json({ error: "Generate the schedule before changing its status." }, { status: 404 });
   const transitions: Record<string, string[]> = { DRAFT: ["APPROVED"], APPROVED: ["DRAFT", "PUBLISHED"], PUBLISHED: [] };
   if (status !== current.status && !transitions[current.status]?.includes(status)) return NextResponse.json({ error: `A ${current.status.toLowerCase()} schedule cannot move directly to ${status.toLowerCase()}.` }, { status: 409 });
   if (status === "APPROVED" && !overrideCoverage) {
-    const [rules, settings] = await Promise.all([
+    const [rules, settings, accounts] = await Promise.all([
       prisma.staffingRule.findMany({ where: { shift: { active: true } }, include: { shift: true } }),
       prisma.appSettings.upsert({ where: { id: "global" }, create: { id: "global" }, update: {} }),
+      prisma.account.findMany({ where: { active: true }, include: { coverageRequirements: true, employeeCapabilities: true } }),
     ]);
     const operatingDays = new Set(settings.workingDays.split(",").map(Number));
     const shortages: string[] = [];
@@ -79,6 +88,11 @@ export async function PATCH(request: Request) {
         if (staffed.length < rule.minimumStaff) shortages.push(`${date}: ${rule.shift.name} is short by ${rule.minimumStaff - staffed.length}.`);
         const bilingual = staffed.filter((assignment) => assignment.employee.isBilingual).length;
         if (bilingual < rule.minimumBilingual) shortages.push(`${date}: ${rule.shift.name} is short by ${rule.minimumBilingual - bilingual} bilingual team member(s).`);
+      }
+      for (const account of accounts) for (const requirement of account.coverageRequirements.filter((item)=>item.dayOfWeek===weekday)) {
+        const capable=new Set(account.employeeCapabilities.map((item)=>item.employeeId));
+        const qualifying=current.assignments.filter((assignment)=>assignment.date.toISOString().slice(0,10)===date&&assignment.status==="WORKING"&&assignment.shift&&assignment.shift.startTime<=requirement.startTime&&assignment.shift.endTime>=requirement.endTime&&capable.has(assignment.employeeId));
+        if(qualifying.length<requirement.minimumStaff)shortages.push(`${date}: ${account.name} ${requirement.startTime}–${requirement.endTime} is short by ${requirement.minimumStaff-qualifying.length}.`);
       }
     }
     if (shortages.length) return NextResponse.json({ error: "Coverage requirements are not met.", code: "COVERAGE_BLOCKED", shortages }, { status: 409 });

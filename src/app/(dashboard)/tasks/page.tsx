@@ -17,7 +17,7 @@ type Daily = {
     note: string | null;
     category: { name: string; icon: string };
   }[];
-  breaks: { employeeId: string; startTime: string; endTime: string }[];
+  breaks: { employeeId: string; type: "MAIN" | "SHORT"; startTime: string; endTime: string }[];
 };
 const today = () =>
   new Intl.DateTimeFormat("en-CA", {
@@ -61,6 +61,7 @@ export default function TasksPage() {
       body: JSON.stringify({
         date,
         employeeId,
+        type: f.get("type"),
         categoryId: f.get("categoryId"),
         note: f.get("note"),
       }),
@@ -85,8 +86,8 @@ export default function TasksPage() {
     setMessage(r.ok ? "Break time saved." : (await r.json()).error);
     await load();
   }
-  async function removeBreak(employeeId: string) {
-    const response = await fetch("/api/daily/breaks", { method: "DELETE", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ date, employeeId }) });
+  async function removeBreak(employeeId: string, type: "MAIN" | "SHORT") {
+    const response = await fetch("/api/daily/breaks", { method: "DELETE", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ date, employeeId, type }) });
     setMessage(response.ok ? "Break removed." : (await response.json()).error);
     await load();
   }
@@ -156,7 +157,8 @@ export default function TasksPage() {
             const tasks = data.tasks.filter(
               (t) => t.employeeId === a.employee.id,
             );
-            const br = data.breaks.find((b) => b.employeeId === a.employee.id);
+            const employeeBreaks = data.breaks.filter((b) => b.employeeId === a.employee.id);
+            const mainBreak = employeeBreaks.find((b) => b.type === "MAIN");
             return (
               <article
                 key={a.id}
@@ -172,12 +174,7 @@ export default function TasksPage() {
                       <p className="text-sm text-slate-500">{a.shift.name}</p>
                     </div>
                   </div>
-                  {br && (
-                    <div className="flex items-center gap-1 rounded-full bg-blue-50 pl-3 text-xs font-bold text-blue-700">
-                      <Clock3 className="h-3 w-3" /> {br.startTime}–{br.endTime}
-                      <button type="button" aria-label={`Remove break for ${a.employee.name}`} onClick={() => void removeBreak(a.employee.id)} className="rounded-full p-2 text-blue-400 hover:bg-red-50 hover:text-red-600"><Trash2 className="h-3 w-3" /></button>
-                    </div>
-                  )}
+                  <div className="flex flex-wrap justify-end gap-1">{employeeBreaks.map((br)=><div key={br.type} className="flex items-center gap-1 rounded-full bg-blue-50 pl-3 text-xs font-bold text-blue-700"><Clock3 className="h-3 w-3" />{br.type === "MAIN" ? "40m" : "20m"} · {br.startTime}–{br.endTime}<button type="button" aria-label={`Remove ${br.type.toLowerCase()} break for ${a.employee.name}`} onClick={() => void removeBreak(a.employee.id,br.type)} className="rounded-full p-2 text-blue-400 hover:bg-red-50 hover:text-red-600"><Trash2 className="h-3 w-3" /></button></div>)}</div>
                 </header>
                 <div className="mt-4 space-y-2">
                   {tasks.map((t) => (
@@ -221,13 +218,14 @@ export default function TasksPage() {
                   onSubmit={(e) => saveBreak(e, a.employee.id)}
                   className="mt-3 flex items-end gap-2 rounded-xl border border-slate-200 p-3"
                 >
+                  <label className="text-xs font-bold">Break type<select name="type" className="mt-1 block rounded-lg border border-slate-200 px-2 py-2"><option value="MAIN">Main · 40 min</option><option value="SHORT">Short · 20 min</option></select></label>
                   <label className="text-xs font-bold">
                     Break start
                     <input
                       required
                       name="start"
                       type="time"
-                      defaultValue={br?.startTime}
+                      defaultValue={mainBreak?.startTime}
                       className="mt-1 block rounded-lg border border-slate-200 px-2 py-2"
                     />
                   </label>
@@ -237,7 +235,7 @@ export default function TasksPage() {
                       required
                       name="end"
                       type="time"
-                      defaultValue={br?.endTime}
+                      defaultValue={mainBreak?.endTime}
                       className="mt-1 block rounded-lg border border-slate-200 px-2 py-2"
                     />
                   </label>

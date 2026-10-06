@@ -47,30 +47,46 @@ export async function POST(request: Request) {
       if (!category && count > 0) warnings.push(`No active ${role} category exists, so those assignments used ${fallback.name}.`);
       for (let index = 0; index < count; index += 1) queue.push((category ?? fallback).id);
     }
-    shiftAssignments.forEach((assignment, index) => {
-      const categoryId = queue[index] ?? fallback.id;
-      taskRows.push({ date, employeeId: assignment.employeeId, categoryId, note: "Automatically assigned from the approved staffing plan." });
+    queue.forEach((categoryId, index) => {
+      const assignment = shiftAssignments[index % shiftAssignments.length];
+      if (!taskRows.some((item) => item.employeeId === assignment.employeeId && item.categoryId === categoryId)) taskRows.push({ date, employeeId: assignment.employeeId, categoryId, note: "Automatically assigned from the approved staffing plan." });
     });
-    if (queue.length > shiftAssignments.length) warnings.push(`${shiftAssignments[0]?.shift?.name ?? "A shift"} requires ${queue.length} task positions but only has ${shiftAssignments.length} working team members.`);
+    shiftAssignments.forEach((assignment) => {
+      if (!taskRows.some((item) => item.employeeId === assignment.employeeId)) taskRows.push({ date, employeeId: assignment.employeeId, categoryId: fallback.id, note: "Automatically assigned from the approved staffing plan." });
+    });
+    if (queue.length > shiftAssignments.length) warnings.push(`${shiftAssignments[0]?.shift?.name ?? "A shift"} has more live workstreams than agents. Shared coverage was assigned and should be monitored.`);
   }
 
-  const breakRows: { date: Date; employeeId: string; startTime: string; endTime: string }[] = [];
-  const breakMinutes = settings.defaultBreakMinutes;
-  let globalCursor = 0;
-  if (breakMinutes > 0) {
-    for (const assignment of assignments) {
-      if (!assignment.shift) continue;
-      const earliest = toMinutes(assignment.shift.startTime) + 60;
-      const latestEnd = toMinutes(assignment.shift.endTime) - 30;
-      const start = Math.max(earliest, globalCursor);
-      const end = start + breakMinutes;
-      if (end > latestEnd) {
-        warnings.push(`No safe ${breakMinutes}-minute break slot was available for ${assignment.employee.name}.`);
-        continue;
-      }
-      breakRows.push({ date, employeeId: assignment.employeeId, startTime: toTime(start), endTime: toTime(end) });
-      globalCursor = end;
+  const breakRows: { date: Date; employeeId: string; type: "MAIN" | "SHORT"; startTime: string; endTime: string }[] = [];
+  const findSlot = (employeeId: string, type: "MAIN" | "SHORT", earliest: number, latestEnd: number, duration: number) => {
+    for (let start = earliest; start + duration <= latestEnd; start += 10) {
+      const end = start + duration;
+      const conflicts = type === "MAIN" && breakRows.some((item) => item.type === "MAIN" && toMinutes(item.startTime) < end + settings.breakGapMinutes && toMinutes(item.endTime) + settings.breakGapMinutes > start);
+      if (conflicts) continue;
+      const covered = assignments.some((assignment) => assignment.employeeId !== employeeId && assignment.shift && toMinutes(assignment.shift.startTime) <= start && toMinutes(assignment.shift.endTime) >= end && !breakRows.some((item) => item.employeeId === assignment.employeeId && toMinutes(item.startTime) < end && toMinutes(item.endTime) > start));
+      if (covered) return { start, end };
     }
+    return null;
+  };
+  for (const assignment of assignments) {
+    if (!assignment.shift || settings.mainBreakMinutes <= 0) continue;
+    const shiftStart = toMinutes(assignment.shift.startTime); const shiftEnd = toMinutes(assignment.shift.endTime);
+    const slot = findSlot(assignment.employeeId, "MAIN", shiftStart + settings.mainBreakAfterMinutes, shiftEnd, settings.mainBreakMinutes);
+    if (!slot) { warnings.push(`No coverage-safe ${settings.mainBreakMinutes}-minute main break was available for ${assignment.employee.name}.`); continue; }
+    breakRows.push({ date, employeeId: assignment.employeeId, type: "MAIN", startTime: toTime(slot.start), endTime: toTime(slot.end) });
+  }
+  for (const assignment of assignments) {
+    if (!assignment.shift || settings.shortBreakMinutes <= 0) continue;
+    const main = breakRows.find((item) => item.employeeId === assignment.employeeId && item.type === "MAIN");
+    const shiftStart = toMinutes(assignment.shift.startTime); const shiftEnd = toMinutes(assignment.shift.endTime);
+    const earliest = main ? toMinutes(main.endTime) + settings.shortBreakDelayMinutes : shiftStart + settings.mainBreakAfterMinutes;
+    let slot = findSlot(assignment.employeeId, "SHORT", earliest, shiftEnd, settings.shortBreakMinutes);
+    if (!slot && main && settings.shortBreakDelayMinutes > 0) {
+      slot = findSlot(assignment.employeeId, "SHORT", toMinutes(main.endTime), shiftEnd, settings.shortBreakMinutes);
+      if (slot) warnings.push(`${assignment.employee.name}'s short break was moved earlier to preserve live-channel coverage.`);
+    }
+    if (!slot) { warnings.push(`No coverage-safe ${settings.shortBreakMinutes}-minute short break was available for ${assignment.employee.name}.`); continue; }
+    breakRows.push({ date, employeeId: assignment.employeeId, type: "SHORT", startTime: toTime(slot.start), endTime: toTime(slot.end) });
   }
 
   await prisma.$transaction(async (tx) => {

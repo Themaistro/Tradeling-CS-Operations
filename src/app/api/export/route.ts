@@ -1,3 +1,10 @@
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/db/prisma";
-export async function GET(){const [employees,shifts,staffingRules,taskCategories,settings,schedulePeriods]=await Promise.all([prisma.employee.findMany({include:{dayOffPreferences:true,timeOff:true}}),prisma.shift.findMany(),prisma.staffingRule.findMany(),prisma.taskCategory.findMany(),prisma.appSettings.findUnique({where:{id:"global"}}),prisma.schedulePeriod.findMany({include:{assignments:true}})]);return new NextResponse(JSON.stringify({exportedAt:new Date().toISOString(),employees,shifts,staffingRules,taskCategories,settings,schedulePeriods},null,2),{headers:{"Content-Type":"application/json","Content-Disposition":`attachment; filename="tradeling-cs-operations-backup.json"`}})}
+export async function GET(){
+  const [employees,accounts,shifts,staffingRules,taskCategories,settings,schedulePeriods,taskAssignments,breakSchedules,acknowledgements,slackPostLogs]=await Promise.all([
+    prisma.employee.findMany({include:{dayOffPreferences:true,timeOff:true,accountCapabilities:true}}),
+    prisma.account.findMany({include:{operatingWindows:true,coverageRequirements:true,employeeCapabilities:true}}),
+    prisma.shift.findMany(),prisma.staffingRule.findMany(),prisma.taskCategory.findMany(),prisma.appSettings.findUnique({where:{id:"global"}}),prisma.schedulePeriod.findMany({include:{assignments:true}}),prisma.taskAssignment.findMany(),prisma.breakSchedule.findMany(),prisma.acknowledgement.findMany(),prisma.slackPostLog.findMany(),
+  ]);
+  return new NextResponse(JSON.stringify({exportedAt:new Date().toISOString(),employees,accounts,shifts,staffingRules,taskCategories,settings,schedulePeriods,taskAssignments,breakSchedules,acknowledgements,slackPostLogs},null,2),{headers:{"Content-Type":"application/json","Content-Disposition":`attachment; filename="tradeling-cs-operations-backup.json"`}});
+}

@@ -56,8 +56,9 @@ export async function POST(request: Request) {
             `${t.category.icon} ${t.category.name}${settings.includeNotesInSlack && t.note ? ` — ${t.note}` : ""}`,
         )
         .join(", ") || "No tasks assigned";
-    const br = breaks.find((b) => b.employeeId === a.employeeId);
-    return `• *${a.employee.name}* · ${a.shift?.name || "Shift"}\n  ${assigned}${settings.includeBreaksInSlack && br ? `\n  ☕ Break: ${br.startTime}–${br.endTime}` : ""}`;
+    const employeeBreaks = breaks.filter((b) => b.employeeId === a.employeeId).sort((left,right)=>left.startTime.localeCompare(right.startTime));
+    const breakText = employeeBreaks.map((item)=>`${item.type === "MAIN" ? "Main" : "Short"} ${item.startTime}–${item.endTime}`).join(" · ");
+    return `• *${a.employee.name}* · ${a.shift?.name || "Shift"}\n  ${assigned}${settings.includeBreaksInSlack && breakText ? `\n  ☕ ${breakText}` : ""}`;
   });
   try {
     const result = await client.chat.postMessage({
