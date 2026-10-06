@@ -9,7 +9,7 @@ const actions = z.discriminatedUnion("action", [
   z.object({ action: z.literal("updateAccount"), id: z.string(), name: z.string().trim().min(2).max(80), code: z.string().trim().min(2).max(20).regex(/^[A-Za-z0-9_-]+$/), active: z.boolean() }),
   z.object({ action: z.literal("addWindow"), accountId: z.string(), dayOfWeek: day, startTime: time, endTime: time }),
   z.object({ action: z.literal("removeWindow"), id: z.string() }),
-  z.object({ action: z.literal("upsertCoverage"), accountId: z.string(), dayOfWeek: day, startTime: time, endTime: time, minimumStaff: z.number().int().min(0).max(100), minimumBilingual: z.number().int().min(0).max(100) }),
+  z.object({ action: z.literal("upsertCoverage"), accountId: z.string(), dayOfWeek: day, startTime: time, endTime: time, minimumStaff: z.number().int().min(1).max(100), minimumBilingual: z.number().int().min(0).max(100) }),
   z.object({ action: z.literal("removeCoverage"), id: z.string() }),
   z.object({ action: z.literal("setCapability"), employeeId: z.string(), accountId: z.string(), enabled: z.boolean() }),
 ]);
@@ -43,10 +43,10 @@ export async function POST(request: Request) {
       await prisma.accountOperatingWindow.delete({ where: { id: data.id } }); return NextResponse.json({ ok: true });
     }
     if (data.action === "upsertCoverage") {
-      if (data.endTime <= data.startTime) return NextResponse.json({ error: "Coverage end time must be after its start time." }, { status: 400 });
-      if (data.minimumBilingual > data.minimumStaff) return NextResponse.json({ error: "Bilingual coverage cannot exceed total staffing." }, { status: 400 });
+      if (data.endTime <= data.startTime) return NextResponse.json({ error: "The end time must be later than the start time." }, { status: 400 });
+      if (data.minimumBilingual > data.minimumStaff) return NextResponse.json({ error: "Bilingual agents cannot be higher than the total agents required." }, { status: 400 });
       const containingWindow = await prisma.accountOperatingWindow.findFirst({ where: { accountId: data.accountId, dayOfWeek: data.dayOfWeek, startTime: { lte: data.startTime }, endTime: { gte: data.endTime } } });
-      if (!containingWindow) return NextResponse.json({ error: "Coverage must be inside the account's operating hours for that day." }, { status: 409 });
+      if (!containingWindow) return NextResponse.json({ error: "This period must be inside the service hours configured for that day." }, { status: 409 });
       const { action: _, ...rule } = data; void _;
       return NextResponse.json(await prisma.coverageRequirement.upsert({ where: { accountId_dayOfWeek_startTime_endTime: { accountId: data.accountId, dayOfWeek: data.dayOfWeek, startTime: data.startTime, endTime: data.endTime } }, create: rule, update: { minimumStaff: data.minimumStaff, minimumBilingual: data.minimumBilingual } }));
     }
