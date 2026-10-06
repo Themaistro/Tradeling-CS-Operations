@@ -62,7 +62,8 @@ export function generateSchedule(input: Input) {
     const available = input.employees.filter((employee) => !leaves.get(employee.id));
     const assigned = new Set<string>();
 
-    for (const shift of isOperatingDay ? input.shifts : []) {
+    const orderedShifts = isOperatingDay ? [...input.shifts].sort((left, right) => (left.minimumByDay[weekday] ?? 0) - (right.minimumByDay[weekday] ?? 0) || right.name.localeCompare(left.name)) : [];
+    for (const shift of orderedShifts) {
       const required = shift.minimumByDay[weekday] ?? 0;
       const bilingualRequired = shift.bilingualByDay[weekday] ?? 0;
       const candidates = available

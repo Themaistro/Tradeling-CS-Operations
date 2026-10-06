@@ -2,6 +2,33 @@ import { NextResponse } from "next/server";
 import { prisma } from "@/lib/db/prisma";
 import { generateSchedule } from "@/features/scheduling/engine/generate-schedule";
 
+type ShiftConfig = { id: string; name: string; startTime: string; endTime: string; order: number; staffingRules: { dayOfWeek: number; minimumStaff: number; minimumBilingual: number; isOverride: boolean }[] };
+type AccountConfig = { operatingWindows?: { dayOfWeek: number }[]; coverageRequirements: { dayOfWeek: number; startTime: string; endTime: string; minimumStaff: number; minimumBilingual: number }[] };
+
+function effectiveStaffing(shifts: ShiftConfig[], accounts: AccountConfig[], employeeCount: number) {
+  const operatingDays = [...new Set(accounts.flatMap((account) => (account.operatingWindows ?? account.coverageRequirements).map((item) => item.dayOfWeek)))];
+  const staff = new Map<string, number>(); const bilingual = new Map<string, number>();
+  for (const shift of shifts) for (const day of operatingDays) {
+    const covered = accounts.flatMap((account) => account.coverageRequirements).filter((requirement) => requirement.dayOfWeek === day && shift.startTime <= requirement.startTime && shift.endTime >= requirement.endTime);
+    const rule = shift.staffingRules.find((item) => item.dayOfWeek === day);
+    const key = `${shift.id}:${day}`;
+    staff.set(key, rule?.isOverride ? rule.minimumStaff : Math.max(0, ...covered.map((item) => item.minimumStaff)));
+    bilingual.set(key, rule?.isOverride ? rule.minimumBilingual : Math.max(0, ...covered.map((item) => item.minimumBilingual)));
+  }
+  const weeklyTarget = employeeCount * 5;
+  let remaining = Math.max(0, weeklyTarget - [...staff.values()].reduce((sum, value) => sum + value, 0));
+  const dayShift = [...shifts].sort((left, right) => left.startTime.localeCompare(right.startTime) || left.order - right.order)[0];
+  while (remaining > 0 && dayShift) {
+    const candidates = operatingDays.filter((day) => !dayShift.staffingRules.find((rule) => rule.dayOfWeek === day)?.isOverride && (staff.get(`${dayShift.id}:${day}`) ?? 0) + shifts.filter((shift) => shift.id !== dayShift.id).reduce((sum, shift) => sum + (staff.get(`${shift.id}:${day}`) ?? 0), 0) < employeeCount);
+    if (!candidates.length) break;
+    const weights = new Map(candidates.map((day) => [day, accounts.filter((account) => (account.operatingWindows ?? account.coverageRequirements).some((item) => item.dayOfWeek === day)).length]));
+    const maxWeight = Math.max(...weights.values());
+    const day = candidates.filter((item) => weights.get(item) === maxWeight).sort((left, right) => (staff.get(`${dayShift.id}:${left}`) ?? 0) - (staff.get(`${dayShift.id}:${right}`) ?? 0) || ((left + 6) % 7) - ((right + 6) % 7))[0];
+    staff.set(`${dayShift.id}:${day}`, (staff.get(`${dayShift.id}:${day}`) ?? 0) + 1); remaining -= 1;
+  }
+  return { operatingDays, staff, bilingual };
+}
+
 export async function GET(request: Request) {
   const url = new URL(request.url); const year = Number(url.searchParams.get("year")); const month = Number(url.searchParams.get("month"));
   if (!Number.isInteger(year) || !Number.isInteger(month) || month < 1 || month > 12) return NextResponse.json({ error: "Invalid month." }, { status: 400 });
@@ -18,7 +45,7 @@ export async function GET(request: Request) {
   for (const date of dateKeys) {
     const weekday = new Date(`${date}T00:00:00.000Z`).getUTCDay();
     if (!operatingDays.has(weekday)) continue;
-    for (const rule of rules.filter((item) => item.dayOfWeek === weekday && item.shift.active)) {
+    for (const rule of rules.filter((item) => item.dayOfWeek === weekday && item.shift.active && item.isOverride)) {
       const staffed = working.filter((assignment) => assignment.date.toISOString().slice(0, 10) === date && assignment.shiftId === rule.shiftId);
       if (staffed.length < rule.minimumStaff) warnings.push({ date, shiftId: rule.shiftId, severity: "critical", code: "STAFF_SHORTAGE", message: `${rule.shift.name} needs ${rule.minimumStaff - staffed.length} more team member(s).` });
       const bilingual = staffed.filter((assignment) => assignment.employee.isBilingual).length;
@@ -42,18 +69,19 @@ export async function POST(request: Request) {
     prisma.employee.findMany({ where: { status: "ACTIVE" }, include: { dayOffPreferences: true, timeOff: true } }),
     prisma.shift.findMany({ where: { active: true }, include: { staffingRules: true }, orderBy: { order: "asc" } }),
     prisma.appSettings.upsert({ where: { id: "global" }, create: { id: "global" }, update: {} }),
-    prisma.account.findMany({ where: { active: true }, include: { operatingWindows: true } }),
+    prisma.account.findMany({ where: { active: true }, include: { operatingWindows: true, coverageRequirements: true } }),
   ]);
   if (!employees.length || !shifts.length) return NextResponse.json({ error: "Add at least one employee and one shift first." }, { status: 400 });
   const existing = await prisma.schedulePeriod.findUnique({ where: { year_month: { year, month } } });
   if (existing && existing.status !== "DRAFT" && !force) return NextResponse.json({ error: "This schedule is approved. Reopen it before generating a replacement.", code: "SCHEDULE_LOCKED" }, { status: 409 });
-  const operatingDays = [...new Set(accounts.flatMap((account) => account.operatingWindows.map((window) => window.dayOfWeek)))];
+  const targets = effectiveStaffing(shifts, accounts, employees.length);
+  const operatingDays = targets.operatingDays;
   if (!operatingDays.length) return NextResponse.json({ error: "Add operating hours for at least one active account before generating a schedule." }, { status: 409 });
   const monthStart = new Date(Date.UTC(year, month - 1, 1));
   const historyStart = new Date(monthStart); historyStart.setUTCDate(historyStart.getUTCDate() - 7);
   const priorAssignments = await prisma.shiftAssignment.findMany({ where: { date: { gte: historyStart, lt: monthStart }, status: "WORKING", employeeId: { in: employees.map((employee) => employee.id) }, schedulePeriod: { status: { in: ["APPROVED", "PUBLISHED"] } } }, select: { employeeId: true, date: true } });
   const priorWorkingDates = Object.fromEntries(employees.map((employee) => [employee.id, priorAssignments.filter((assignment) => assignment.employeeId === employee.id).map((assignment) => assignment.date.toISOString().slice(0, 10))]));
-  const generated = generateSchedule({ year, month, maxConsecutiveDays: settings.maxConsecutiveDays, operatingDays, weekStartsOn: settings.weekStartsOn, maxWeeklyDays: 5, priorWorkingDates, employees: employees.map(e => ({ id: e.id, name: e.name, preferredShiftId: e.preferredShiftId, isBilingual: e.isBilingual, dayOffPreferences: e.dayOffPreferences.map(d => ({ dayOfWeek: d.dayOfWeek, rank: d.rank })), timeOff: e.timeOff.map(t => ({ date: t.date.toISOString().slice(0, 10), type: t.type })) })), shifts: shifts.map(s => ({ id: s.id, name: s.name, minimumByDay: Object.fromEntries(s.staffingRules.map(r => [r.dayOfWeek, r.minimumStaff])), bilingualByDay: Object.fromEntries(s.staffingRules.map(r => [r.dayOfWeek, r.minimumBilingual])) })) });
+  const generated = generateSchedule({ year, month, maxConsecutiveDays: settings.maxConsecutiveDays, operatingDays, weekStartsOn: settings.weekStartsOn, maxWeeklyDays: 5, priorWorkingDates, employees: employees.map(e => ({ id: e.id, name: e.name, preferredShiftId: e.preferredShiftId, isBilingual: e.isBilingual, dayOffPreferences: e.dayOffPreferences.map(d => ({ dayOfWeek: d.dayOfWeek, rank: d.rank })), timeOff: e.timeOff.map(t => ({ date: t.date.toISOString().slice(0, 10), type: t.type })) })), shifts: shifts.map(s => ({ id: s.id, name: s.name, minimumByDay: Object.fromEntries(operatingDays.map(day => [day, targets.staff.get(`${s.id}:${day}`) ?? 0])), bilingualByDay: Object.fromEntries(operatingDays.map(day => [day, targets.bilingual.get(`${s.id}:${day}`) ?? 0])) })) });
   const period = await prisma.$transaction(async tx => {
     const saved = await tx.schedulePeriod.upsert({ where: { year_month: { year, month } }, create: { year, month, generatedAt: new Date() }, update: { status: "DRAFT", generatedAt: new Date() } });
     await tx.shiftAssignment.deleteMany({ where: { schedulePeriodId: saved.id } });
@@ -83,7 +111,7 @@ export async function PATCH(request: Request) {
     for (const date of dates) {
       const weekday = new Date(`${date}T00:00:00.000Z`).getUTCDay();
       if (!operatingDays.has(weekday)) continue;
-      for (const rule of rules.filter((item) => item.dayOfWeek === weekday)) {
+      for (const rule of rules.filter((item) => item.dayOfWeek === weekday && item.isOverride)) {
         const staffed = current.assignments.filter((assignment) => assignment.date.toISOString().slice(0, 10) === date && assignment.status === "WORKING" && assignment.shiftId === rule.shiftId);
         if (staffed.length < rule.minimumStaff) shortages.push(`${date}: ${rule.shift.name} is short by ${rule.minimumStaff - staffed.length}.`);
         const bilingual = staffed.filter((assignment) => assignment.employee.isBilingual).length;

@@ -86,12 +86,13 @@ model Shift {
 }
 
 model StaffingRule {
-  id               String @id @default(cuid())
+  id               String  @id @default(cuid())
   dayOfWeek        Int
   shiftId          String
-  shift            Shift  @relation(fields: [shiftId], references: [id], onDelete: Cascade)
-  minimumStaff     Int    @default(0)
-  minimumBilingual Int    @default(0)
+  shift            Shift   @relation(fields: [shiftId], references: [id], onDelete: Cascade)
+  minimumStaff     Int     @default(0)
+  minimumBilingual Int     @default(0)
+  isOverride       Boolean @default(false)
 
   @@unique([dayOfWeek, shiftId])
 }
