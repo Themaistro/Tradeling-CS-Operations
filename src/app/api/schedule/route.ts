@@ -7,10 +7,9 @@ export async function GET(request: Request) {
   if (!Number.isInteger(year) || !Number.isInteger(month) || month < 1 || month > 12) return NextResponse.json({ error: "Invalid month." }, { status: 400 });
   const period = await prisma.schedulePeriod.findUnique({ where: { year_month: { year, month } }, include: { assignments: { include: { employee: true, shift: true }, orderBy: { date: "asc" } } } });
   if (!period) return NextResponse.json(null);
-  const [rules, settings, absenceScenarios] = await Promise.all([
+  const [rules, settings] = await Promise.all([
     prisma.staffingRule.findMany({ include: { shift: true } }),
     prisma.appSettings.upsert({ where: { id: "global" }, create: { id: "global" }, update: {} }),
-    prisma.operationScenario.findMany({ where: { status: "ACTIVE", type: "ABSENCE", startDate: { lte: new Date(Date.UTC(year, month, 0)) }, endDate: { gte: new Date(Date.UTC(year, month - 1, 1)) } } }),
   ]);
   const operatingDays = new Set(settings.workingDays.split(",").map(Number));
   const warnings: { date: string; shiftId: string; severity: "critical"; code: string; message: string }[] = [];
@@ -20,8 +19,7 @@ export async function GET(request: Request) {
     const weekday = new Date(`${date}T00:00:00.000Z`).getUTCDay();
     if (!operatingDays.has(weekday)) continue;
     for (const rule of rules.filter((item) => item.dayOfWeek === weekday && item.shift.active)) {
-      const absentIds = new Set(absenceScenarios.filter((scenario) => scenario.startDate <= new Date(`${date}T00:00:00.000Z`) && scenario.endDate >= new Date(`${date}T00:00:00.000Z`)).map((scenario) => scenario.employeeId));
-      const staffed = working.filter((assignment) => assignment.date.toISOString().slice(0, 10) === date && assignment.shiftId === rule.shiftId && !absentIds.has(assignment.employeeId));
+      const staffed = working.filter((assignment) => assignment.date.toISOString().slice(0, 10) === date && assignment.shiftId === rule.shiftId);
       if (staffed.length < rule.minimumStaff) warnings.push({ date, shiftId: rule.shiftId, severity: "critical", code: "STAFF_SHORTAGE", message: `${rule.shift.name} needs ${rule.minimumStaff - staffed.length} more team member(s).` });
       const bilingual = staffed.filter((assignment) => assignment.employee.isBilingual).length;
       if (bilingual < rule.minimumBilingual) warnings.push({ date, shiftId: rule.shiftId, severity: "critical", code: "BILINGUAL_SHORTAGE", message: `${rule.shift.name} needs ${rule.minimumBilingual - bilingual} more bilingual team member(s).` });
@@ -66,10 +64,9 @@ export async function PATCH(request: Request) {
   const transitions: Record<string, string[]> = { DRAFT: ["APPROVED"], APPROVED: ["DRAFT", "PUBLISHED"], PUBLISHED: [] };
   if (status !== current.status && !transitions[current.status]?.includes(status)) return NextResponse.json({ error: `A ${current.status.toLowerCase()} schedule cannot move directly to ${status.toLowerCase()}.` }, { status: 409 });
   if (status === "APPROVED" && !overrideCoverage) {
-    const [rules, settings, absenceScenarios] = await Promise.all([
+    const [rules, settings] = await Promise.all([
       prisma.staffingRule.findMany({ where: { shift: { active: true } }, include: { shift: true } }),
       prisma.appSettings.upsert({ where: { id: "global" }, create: { id: "global" }, update: {} }),
-      prisma.operationScenario.findMany({ where: { status: "ACTIVE", type: "ABSENCE", startDate: { lte: new Date(Date.UTC(key.year, key.month, 0)) }, endDate: { gte: new Date(Date.UTC(key.year, key.month - 1, 1)) } } }),
     ]);
     const operatingDays = new Set(settings.workingDays.split(",").map(Number));
     const shortages: string[] = [];
@@ -78,9 +75,7 @@ export async function PATCH(request: Request) {
       const weekday = new Date(`${date}T00:00:00.000Z`).getUTCDay();
       if (!operatingDays.has(weekday)) continue;
       for (const rule of rules.filter((item) => item.dayOfWeek === weekday)) {
-        const scenarioDate = new Date(`${date}T00:00:00.000Z`);
-        const absentIds = new Set(absenceScenarios.filter((scenario) => scenario.startDate <= scenarioDate && scenario.endDate >= scenarioDate).map((scenario) => scenario.employeeId));
-        const staffed = current.assignments.filter((assignment) => assignment.date.toISOString().slice(0, 10) === date && assignment.status === "WORKING" && assignment.shiftId === rule.shiftId && !absentIds.has(assignment.employeeId));
+        const staffed = current.assignments.filter((assignment) => assignment.date.toISOString().slice(0, 10) === date && assignment.status === "WORKING" && assignment.shiftId === rule.shiftId);
         if (staffed.length < rule.minimumStaff) shortages.push(`${date}: ${rule.shift.name} is short by ${rule.minimumStaff - staffed.length}.`);
         const bilingual = staffed.filter((assignment) => assignment.employee.isBilingual).length;
         if (bilingual < rule.minimumBilingual) shortages.push(`${date}: ${rule.shift.name} is short by ${rule.minimumBilingual - bilingual} bilingual team member(s).`);

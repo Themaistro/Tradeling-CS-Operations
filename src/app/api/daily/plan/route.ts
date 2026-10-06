@@ -19,7 +19,7 @@ export async function POST(request: Request) {
   if (!parsed.success) return NextResponse.json({ error: "Choose a valid operation date." }, { status: 400 });
   const date = new Date(`${parsed.data.date}T00:00:00.000Z`);
   const weekday = date.getUTCDay();
-  const [scheduledAssignments, allCategories, existingTasks, existingBreaks, settings, scenarios] = await Promise.all([
+  const [assignments, categories, existingTasks, existingBreaks, settings] = await Promise.all([
     prisma.shiftAssignment.findMany({
       where: { date, status: "WORKING", schedulePeriod: { status: { in: ["APPROVED", "PUBLISHED"] } } },
       include: { employee: true, shift: { include: { staffingRules: { where: { dayOfWeek: weekday } } } } },
@@ -29,13 +29,7 @@ export async function POST(request: Request) {
     prisma.taskAssignment.count({ where: { date } }),
     prisma.breakSchedule.count({ where: { date } }),
     prisma.appSettings.upsert({ where: { id: "global" }, create: { id: "global" }, update: {} }),
-    prisma.operationScenario.findMany({ where: { status: "ACTIVE", startDate: { lte: date }, endDate: { gte: date } } }),
   ]);
-  const absentIds = new Set(scenarios.filter((scenario) => scenario.type === "ABSENCE" && scenario.employeeId).map((scenario) => scenario.employeeId));
-  const assignments = scheduledAssignments.filter((assignment) => !absentIds.has(assignment.employeeId));
-  const unavailableCategoryIds = new Set(scenarios.filter((scenario) => scenario.type === "SYSTEM_OUTAGE" && scenario.categoryId).map((scenario) => scenario.categoryId));
-  const categories = allCategories.filter((category) => !unavailableCategoryIds.has(category.id));
-  const demandMultiplier = Math.max(1, ...scenarios.filter((scenario) => scenario.type === "DEMAND_SURGE").map((scenario) => scenario.staffingMultiplier));
   if (!assignments.length) return NextResponse.json({ error: "Approve a working roster for this date before building the daily plan." }, { status: 409 });
   if ((existingTasks || existingBreaks) && !parsed.data.replace) return NextResponse.json({ error: "This day already contains tasks or breaks.", code: "PLAN_EXISTS", existingTasks, existingBreaks }, { status: 409 });
   if (!categories.length) return NextResponse.json({ error: "Add at least one active task category first." }, { status: 409 });
@@ -50,9 +44,8 @@ export async function POST(request: Request) {
     const queue: string[] = [];
     for (const [role, count] of [["calls", rule?.calls ?? 0], ["chats", rule?.chats ?? 0], ["tickets", rule?.tickets ?? 0]] as const) {
       const category = categoryByRole.get(role);
-      const adjustedCount = Math.ceil(count * demandMultiplier);
-      if (!category && adjustedCount > 0) warnings.push(`No available ${role} category exists, so those assignments used ${fallback.name}.`);
-      for (let index = 0; index < adjustedCount; index += 1) queue.push((category ?? fallback).id);
+      if (!category && count > 0) warnings.push(`No active ${role} category exists, so those assignments used ${fallback.name}.`);
+      for (let index = 0; index < count; index += 1) queue.push((category ?? fallback).id);
     }
     shiftAssignments.forEach((assignment, index) => {
       const categoryId = queue[index] ?? fallback.id;
@@ -60,8 +53,6 @@ export async function POST(request: Request) {
     });
     if (queue.length > shiftAssignments.length) warnings.push(`${shiftAssignments[0]?.shift?.name ?? "A shift"} requires ${queue.length} task positions but only has ${shiftAssignments.length} working team members.`);
   }
-  if (absentIds.size) warnings.push(`${absentIds.size} scheduled employee(s) were excluded by active absence scenarios.`);
-  if (demandMultiplier > 1) warnings.push(`Task demand was increased by ${demandMultiplier}× for the active surge scenario.`);
 
   const breakRows: { date: Date; employeeId: string; startTime: string; endTime: string }[] = [];
   const breakMinutes = settings.defaultBreakMinutes;
@@ -71,9 +62,7 @@ export async function POST(request: Request) {
       if (!assignment.shift) continue;
       const earliest = toMinutes(assignment.shift.startTime) + 60;
       const latestEnd = toMinutes(assignment.shift.endTime) - 30;
-      const training = scenarios.find((scenario) => scenario.type === "TRAINING" && scenario.employeeId === assignment.employeeId && scenario.startTime && scenario.endTime);
-      let start = Math.max(earliest, globalCursor);
-      if (training && start < toMinutes(training.endTime!) && start + breakMinutes > toMinutes(training.startTime!)) start = toMinutes(training.endTime!);
+      const start = Math.max(earliest, globalCursor);
       const end = start + breakMinutes;
       if (end > latestEnd) {
         warnings.push(`No safe ${breakMinutes}-minute break slot was available for ${assignment.employee.name}.`);
