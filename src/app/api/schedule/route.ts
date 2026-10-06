@@ -3,17 +3,18 @@ import { prisma } from "@/lib/db/prisma";
 import { generateSchedule } from "@/features/scheduling/engine/generate-schedule";
 
 type ShiftConfig = { id: string; name: string; startTime: string; endTime: string; order: number; staffingRules: { dayOfWeek: number; minimumStaff: number; minimumBilingual: number; isOverride: boolean }[] };
-type AccountConfig = { operatingWindows?: { dayOfWeek: number }[]; coverageRequirements: { dayOfWeek: number; startTime: string; endTime: string; minimumStaff: number; minimumBilingual: number }[] };
+type AccountConfig = { id: string; operatingWindows?: { dayOfWeek: number }[]; coverageRequirements: { dayOfWeek: number; startTime: string; endTime: string; minimumStaff: number; minimumBilingual: number }[] };
 
 function effectiveStaffing(shifts: ShiftConfig[], accounts: AccountConfig[], employeeCount: number) {
   const operatingDays = [...new Set(accounts.flatMap((account) => (account.operatingWindows ?? account.coverageRequirements).map((item) => item.dayOfWeek)))];
-  const staff = new Map<string, number>(); const bilingual = new Map<string, number>();
+  const staff = new Map<string, number>(); const bilingual = new Map<string, number>(); const requiredAccounts = new Map<string, string[]>();
   for (const shift of shifts) for (const day of operatingDays) {
-    const covered = accounts.flatMap((account) => account.coverageRequirements).filter((requirement) => requirement.dayOfWeek === day && shift.startTime <= requirement.startTime && shift.endTime >= requirement.endTime);
+    const covered = accounts.flatMap((account) => account.coverageRequirements.map((requirement) => ({ ...requirement, accountId: account.id }))).filter((requirement) => requirement.dayOfWeek === day && shift.startTime <= requirement.startTime && shift.endTime >= requirement.endTime);
     const rule = shift.staffingRules.find((item) => item.dayOfWeek === day);
     const key = `${shift.id}:${day}`;
     staff.set(key, rule?.isOverride ? rule.minimumStaff : Math.max(0, ...covered.map((item) => item.minimumStaff)));
     bilingual.set(key, rule?.isOverride ? rule.minimumBilingual : Math.max(0, ...covered.map((item) => item.minimumBilingual)));
+    requiredAccounts.set(key, [...new Set(covered.map((item) => item.accountId))]);
   }
   const weeklyTarget = employeeCount * 5;
   let remaining = Math.max(0, weeklyTarget - [...staff.values()].reduce((sum, value) => sum + value, 0));
@@ -26,7 +27,7 @@ function effectiveStaffing(shifts: ShiftConfig[], accounts: AccountConfig[], emp
     const day = candidates.filter((item) => weights.get(item) === maxWeight).sort((left, right) => (staff.get(`${dayShift.id}:${left}`) ?? 0) - (staff.get(`${dayShift.id}:${right}`) ?? 0) || ((left + 6) % 7) - ((right + 6) % 7))[0];
     staff.set(`${dayShift.id}:${day}`, (staff.get(`${dayShift.id}:${day}`) ?? 0) + 1); remaining -= 1;
   }
-  return { operatingDays, staff, bilingual };
+  return { operatingDays, staff, bilingual, requiredAccounts };
 }
 
 export async function GET(request: Request) {
@@ -66,7 +67,7 @@ export async function POST(request: Request) {
   const { year, month, force = false } = await request.json();
   if (!Number.isInteger(year) || !Number.isInteger(month) || month < 1 || month > 12) return NextResponse.json({ error: "Invalid month." }, { status: 400 });
   const [employees, shifts, settings, accounts] = await Promise.all([
-    prisma.employee.findMany({ where: { status: "ACTIVE" }, include: { dayOffPreferences: true, timeOff: true } }),
+    prisma.employee.findMany({ where: { status: "ACTIVE" }, include: { dayOffPreferences: true, timeOff: true, accountCapabilities: true } }),
     prisma.shift.findMany({ where: { active: true }, include: { staffingRules: true }, orderBy: { order: "asc" } }),
     prisma.appSettings.upsert({ where: { id: "global" }, create: { id: "global" }, update: {} }),
     prisma.account.findMany({ where: { active: true }, include: { operatingWindows: true, coverageRequirements: true } }),
@@ -81,7 +82,7 @@ export async function POST(request: Request) {
   const historyStart = new Date(monthStart); historyStart.setUTCDate(historyStart.getUTCDate() - 7);
   const priorAssignments = await prisma.shiftAssignment.findMany({ where: { date: { gte: historyStart, lt: monthStart }, status: "WORKING", employeeId: { in: employees.map((employee) => employee.id) }, schedulePeriod: { status: { in: ["APPROVED", "PUBLISHED"] } } }, select: { employeeId: true, date: true } });
   const priorWorkingDates = Object.fromEntries(employees.map((employee) => [employee.id, priorAssignments.filter((assignment) => assignment.employeeId === employee.id).map((assignment) => assignment.date.toISOString().slice(0, 10))]));
-  const generated = generateSchedule({ year, month, maxConsecutiveDays: settings.maxConsecutiveDays, operatingDays, weekStartsOn: settings.weekStartsOn, maxWeeklyDays: 5, priorWorkingDates, employees: employees.map(e => ({ id: e.id, name: e.name, preferredShiftId: e.preferredShiftId, isBilingual: e.isBilingual, dayOffPreferences: e.dayOffPreferences.map(d => ({ dayOfWeek: d.dayOfWeek, rank: d.rank })), timeOff: e.timeOff.map(t => ({ date: t.date.toISOString().slice(0, 10), type: t.type })) })), shifts: shifts.map(s => ({ id: s.id, name: s.name, minimumByDay: Object.fromEntries(operatingDays.map(day => [day, targets.staff.get(`${s.id}:${day}`) ?? 0])), bilingualByDay: Object.fromEntries(operatingDays.map(day => [day, targets.bilingual.get(`${s.id}:${day}`) ?? 0])) })) });
+  const generated = generateSchedule({ year, month, maxConsecutiveDays: settings.maxConsecutiveDays, operatingDays, weekStartsOn: settings.weekStartsOn, maxWeeklyDays: 5, priorWorkingDates, employees: employees.map(e => ({ id: e.id, name: e.name, preferredShiftId: e.preferredShiftId, isBilingual: e.isBilingual, accountIds: e.accountCapabilities.map((item) => item.accountId), dayOffPreferences: e.dayOffPreferences.map(d => ({ dayOfWeek: d.dayOfWeek, rank: d.rank })), timeOff: e.timeOff.map(t => ({ date: t.date.toISOString().slice(0, 10), type: t.type })) })), shifts: shifts.map(s => ({ id: s.id, name: s.name, minimumByDay: Object.fromEntries(operatingDays.map(day => [day, targets.staff.get(`${s.id}:${day}`) ?? 0])), bilingualByDay: Object.fromEntries(operatingDays.map(day => [day, targets.bilingual.get(`${s.id}:${day}`) ?? 0])), requiredAccountIdsByDay: Object.fromEntries(operatingDays.map(day => [day, targets.requiredAccounts.get(`${s.id}:${day}`) ?? []])) })) });
   const period = await prisma.$transaction(async tx => {
     const saved = await tx.schedulePeriod.upsert({ where: { year_month: { year, month } }, create: { year, month, generatedAt: new Date() }, update: { status: "DRAFT", generatedAt: new Date() } });
     await tx.shiftAssignment.deleteMany({ where: { schedulePeriodId: saved.id } });

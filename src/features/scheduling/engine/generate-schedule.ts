@@ -96,10 +96,11 @@ export function generateSchedule(input: Input) {
     for (const shift of orderedShifts) {
       const required = shift.minimumByDay[weekday] ?? 0;
       const bilingualRequired = shift.bilingualByDay[weekday] ?? 0;
-      const candidates = available
+      const requiredAccountIds = shift.requiredAccountIdsByDay[weekday] ?? [];
+      const eligibleCandidates = available
         .filter((employee) => !assigned.has(employee.id) && (consecutive.get(employee.id) ?? 0) < input.maxConsecutiveDays)
         .filter((employee) => (weeklyCount.get(employee.id) ?? 0) < (input.maxWeeklyDays ?? 5))
-        .filter((employee) => !consecutiveOffPlan?.get(employee.id)?.has(weekday))
+        .filter((employee) => requiredAccountIds.every((accountId) => employee.accountIds.includes(accountId)))
         .sort((a, b) => {
           const aDayOffRank = a.dayOffPreferences.find((item) => item.dayOfWeek === weekday)?.rank ?? 99;
           const bDayOffRank = b.dayOffPreferences.find((item) => item.dayOfWeek === weekday)?.rank ?? 99;
@@ -109,8 +110,12 @@ export function generateSchedule(input: Input) {
           const bScore = (b.preferredShiftId === shift.id ? 20 : 0) + (bWeeklyShift === shift.id ? 100 : bWeeklyShift ? -100 : 0) - (bDayOffRank === 1 ? 30 : bDayOffRank === 2 ? 15 : 0) - (workCount.get(b.id) ?? 0) * 2;
           return bScore - aScore || a.name.localeCompare(b.name);
         });
+      const protectedRest = eligibleCandidates.filter((employee) => consecutiveOffPlan?.get(employee.id)?.has(weekday));
+      const candidates = [...eligibleCandidates.filter((employee) => !consecutiveOffPlan?.get(employee.id)?.has(weekday)), ...protectedRest];
       const bilingual = candidates.filter((employee) => employee.isBilingual).slice(0, bilingualRequired);
       const selected = [...bilingual, ...candidates.filter((employee) => !bilingual.some((chosen) => chosen.id === employee.id)).slice(0, Math.max(0, required - bilingual.length))];
+      const restOverrides = selected.filter((employee) => protectedRest.some((resting) => resting.id === employee.id));
+      if (restOverrides.length) warnings.push({ date: dateKey, shiftId: shift.id, severity: "warning", code: "REST_PATTERN_OVERRIDE", message: `${restOverrides.map((employee) => employee.name).join(", ")} had a planned day off adjusted to protect ${shift.name} coverage.` });
       selected.forEach((employee) => {
         assigned.add(employee.id);
         if (!weeklyShift.has(employee.id)) weeklyShift.set(employee.id, shift.id);
