@@ -167,6 +167,18 @@ export default function SettingsPage() {
     setSaving(false);
   }
 
+  async function removeCategory(id: string) {
+    if (!confirm("Remove this task category? Existing task history will be preserved.")) return;
+    const response = await fetch("/api/task-categories", {
+      method: "DELETE",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ id }),
+    });
+    const body = await response.json();
+    setNotice({ kind: response.ok ? "success" : "error", text: response.ok ? (body.archived ? "Category archived. Existing history was preserved." : "Category removed.") : body.error });
+    if (response.ok) await load();
+  }
+
   async function saveCoverage(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     setSaving(true);
@@ -627,7 +639,15 @@ export default function SettingsPage() {
                         className="flex items-center gap-3 rounded-xl border border-slate-200 p-4"
                       >
                         <span className="text-xl">{c.icon}</span>
-                        <b className="text-sm">{c.name}</b>
+                        <b className="min-w-0 flex-1 truncate text-sm">{c.name}</b>
+                        <button
+                          type="button"
+                          aria-label={`Remove ${c.name}`}
+                          onClick={() => void removeCategory(c.id)}
+                          className="rounded-lg p-2 text-slate-400 hover:bg-red-50 hover:text-red-600"
+                        >
+                          <Trash2 className="h-4 w-4" />
+                        </button>
                       </div>
                     ))}
                   </div>

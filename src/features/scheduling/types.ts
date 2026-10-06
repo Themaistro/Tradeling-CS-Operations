@@ -3,8 +3,8 @@ export type ScheduleEmployee = {
   name: string;
   preferredShiftId: string | null;
   isBilingual: boolean;
-  daysOff: number[];
-  timeOff: string[];
+  dayOffPreferences: { dayOfWeek: number; rank: number }[];
+  timeOff: { date: string; type: "PTO" | "SICK" | "UNPAID" | "OTHER" }[];
 };
 
 export type ScheduleShift = {
@@ -17,12 +17,14 @@ export type ScheduleShift = {
 export type GeneratedAssignment = {
   employeeId: string;
   date: string;
-  status: "WORKING" | "OFF" | "PTO";
+  status: "WORKING" | "OFF" | "PTO" | "SICK";
   shiftId: string | null;
 };
 
 export type ScheduleWarning = {
   date: string;
   shiftId: string;
+  severity: "warning" | "critical";
+  code: "STAFF_SHORTAGE" | "BILINGUAL_SHORTAGE";
   message: string;
 };

@@ -9,3 +9,20 @@ export async function POST(request: Request) {
   const category = await prisma.taskCategory.create({ data: { ...parsed.data, order: await prisma.taskCategory.count() } });
   return NextResponse.json(category, { status: 201 });
 }
+export async function PATCH(request: Request) {
+  const parsed = schema.extend({ id: z.string() }).safeParse(await request.json());
+  if (!parsed.success) return NextResponse.json({ error: "Enter a valid category." }, { status: 400 });
+  const { id, ...data } = parsed.data;
+  return NextResponse.json(await prisma.taskCategory.update({ where: { id }, data }));
+}
+export async function DELETE(request: Request) {
+  const parsed = z.object({ id: z.string() }).safeParse(await request.json());
+  if (!parsed.success) return NextResponse.json({ error: "Invalid category." }, { status: 400 });
+  const used = await prisma.taskAssignment.count({ where: { categoryId: parsed.data.id } });
+  if (used) {
+    await prisma.taskCategory.update({ where: { id: parsed.data.id }, data: { active: false } });
+    return NextResponse.json({ ok: true, archived: true });
+  }
+  await prisma.taskCategory.delete({ where: { id: parsed.data.id } });
+  return NextResponse.json({ ok: true, archived: false });
+}

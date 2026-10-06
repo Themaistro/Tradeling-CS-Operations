@@ -1,7 +1,20 @@
 import { eachDayOfInterval, endOfMonth, format, startOfMonth } from "date-fns";
 import type { GeneratedAssignment, ScheduleEmployee, ScheduleShift, ScheduleWarning } from "../types";
 
-type Input = { year: number; month: number; employees: ScheduleEmployee[]; shifts: ScheduleShift[]; maxConsecutiveDays: number };
+type Input = {
+  year: number;
+  month: number;
+  employees: ScheduleEmployee[];
+  shifts: ScheduleShift[];
+  maxConsecutiveDays: number;
+  workingDays: number[];
+  maxWeeklyDays?: number;
+};
+
+function leaveStatus(type: ScheduleEmployee["timeOff"][number]["type"]): GeneratedAssignment["status"] {
+  if (type === "SICK") return "SICK";
+  return "PTO";
+}
 
 export function generateSchedule(input: Input) {
   const first = startOfMonth(new Date(input.year, input.month - 1, 1));
@@ -10,38 +23,53 @@ export function generateSchedule(input: Input) {
   const warnings: ScheduleWarning[] = [];
   const workCount = new Map<string, number>();
   const consecutive = new Map<string, number>();
+  const weeklyCount = new Map<string, number>();
+  let currentWeek = -1;
 
   for (const date of days) {
     const dateKey = format(date, "yyyy-MM-dd");
     const weekday = date.getDay();
-    const available = input.employees.filter((employee) => !employee.timeOff.includes(dateKey) && !employee.daysOff.includes(weekday));
+    const weekKey = Math.floor((date.getDate() + new Date(date.getFullYear(), date.getMonth(), 1).getDay() - 1) / 7);
+    if (weekKey !== currentWeek) {
+      weeklyCount.clear();
+      currentWeek = weekKey;
+    }
+    const leaves = new Map(input.employees.map((employee) => [employee.id, employee.timeOff.find((entry) => entry.date === dateKey)]));
+    const isOperatingDay = input.workingDays.includes(weekday);
+    const available = input.employees.filter((employee) => !leaves.get(employee.id));
     const assigned = new Set<string>();
 
-    for (const shift of input.shifts) {
+    for (const shift of isOperatingDay ? input.shifts : []) {
       const required = shift.minimumByDay[weekday] ?? 0;
       const bilingualRequired = shift.bilingualByDay[weekday] ?? 0;
       const candidates = available
         .filter((employee) => !assigned.has(employee.id) && (consecutive.get(employee.id) ?? 0) < input.maxConsecutiveDays)
+        .filter((employee) => (weeklyCount.get(employee.id) ?? 0) < (input.maxWeeklyDays ?? 5))
         .sort((a, b) => {
-          const bilingualPriority = Number(b.isBilingual) - Number(a.isBilingual);
-          const preferencePriority = Number(b.preferredShiftId === shift.id) - Number(a.preferredShiftId === shift.id);
-          return bilingualPriority + preferencePriority || (workCount.get(a.id) ?? 0) - (workCount.get(b.id) ?? 0);
+          const aDayOffRank = a.dayOffPreferences.find((item) => item.dayOfWeek === weekday)?.rank ?? 99;
+          const bDayOffRank = b.dayOffPreferences.find((item) => item.dayOfWeek === weekday)?.rank ?? 99;
+          const aScore = (a.preferredShiftId === shift.id ? 20 : 0) - (aDayOffRank === 1 ? 30 : aDayOffRank === 2 ? 15 : 0) - (workCount.get(a.id) ?? 0) * 2;
+          const bScore = (b.preferredShiftId === shift.id ? 20 : 0) - (bDayOffRank === 1 ? 30 : bDayOffRank === 2 ? 15 : 0) - (workCount.get(b.id) ?? 0) * 2;
+          return bScore - aScore || a.name.localeCompare(b.name);
         });
-      const selected = candidates.slice(0, required);
+      const bilingual = candidates.filter((employee) => employee.isBilingual).slice(0, bilingualRequired);
+      const selected = [...bilingual, ...candidates.filter((employee) => !bilingual.some((chosen) => chosen.id === employee.id)).slice(0, Math.max(0, required - bilingual.length))];
       selected.forEach((employee) => {
         assigned.add(employee.id);
         workCount.set(employee.id, (workCount.get(employee.id) ?? 0) + 1);
+        weeklyCount.set(employee.id, (weeklyCount.get(employee.id) ?? 0) + 1);
         assignments.push({ employeeId: employee.id, date: dateKey, status: "WORKING", shiftId: shift.id });
       });
-      if (selected.length < required) warnings.push({ date: dateKey, shiftId: shift.id, message: `${shift.name} needs ${required - selected.length} more team member(s).` });
-      if (selected.filter((employee) => employee.isBilingual).length < bilingualRequired) warnings.push({ date: dateKey, shiftId: shift.id, message: `${shift.name} is below bilingual coverage.` });
+      if (selected.length < required) warnings.push({ date: dateKey, shiftId: shift.id, severity: "critical", code: "STAFF_SHORTAGE", message: `${shift.name} needs ${required - selected.length} more team member(s).` });
+      if (selected.filter((employee) => employee.isBilingual).length < bilingualRequired) warnings.push({ date: dateKey, shiftId: shift.id, severity: "critical", code: "BILINGUAL_SHORTAGE", message: `${shift.name} needs ${bilingualRequired - selected.filter((employee) => employee.isBilingual).length} more bilingual team member(s).` });
     }
 
     for (const employee of input.employees) {
       if (assigned.has(employee.id)) consecutive.set(employee.id, (consecutive.get(employee.id) ?? 0) + 1);
       else {
         consecutive.set(employee.id, 0);
-        assignments.push({ employeeId: employee.id, date: dateKey, status: employee.timeOff.includes(dateKey) ? "PTO" : "OFF", shiftId: null });
+        const leave = leaves.get(employee.id);
+        assignments.push({ employeeId: employee.id, date: dateKey, status: leave ? leaveStatus(leave.type) : "OFF", shiftId: null });
       }
     }
   }

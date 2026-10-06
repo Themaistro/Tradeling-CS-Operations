@@ -1,17 +1,19 @@
 "use client";
 import { useEffect, useState } from "react";
-import { CalendarDays, CheckCircle2, LoaderCircle } from "lucide-react";
+import { AlertTriangle, CalendarDays, CheckCircle2, LoaderCircle, LockOpen } from "lucide-react";
 import { PageHeading } from "@/components/ui/page-heading";
 type Period = {
   status: string;
+  warnings?: { date: string; shiftId: string; severity: string; code: string; message: string }[];
   assignments: {
     id: string;
     date: string;
     status: string;
     employee: { name: string };
-    shift: { name: string } | null;
+    shift: { id: string; name: string } | null;
   }[];
 } | null;
+type Shift = { id: string; name: string; startTime: string; endTime: string };
 export default function SchedulePage() {
   const now = new Date();
   const [year, setYear] = useState(now.getFullYear());
@@ -19,6 +21,7 @@ export default function SchedulePage() {
   const [period, setPeriod] = useState<Period>(null);
   const [loading, setLoading] = useState(false);
   const [message, setMessage] = useState("");
+  const [shifts, setShifts] = useState<Shift[]>([]);
   const load = () =>
     fetch(`/api/schedule?year=${year}&month=${month}`)
       .then((r) => r.json())
@@ -28,6 +31,9 @@ export default function SchedulePage() {
       .then((r) => r.json())
       .then(setPeriod);
   }, [year, month]);
+  useEffect(() => {
+    void fetch("/api/shifts").then((response) => response.json()).then(setShifts);
+  }, []);
   async function generate() {
     setLoading(true);
     const r = await fetch("/api/schedule", {
@@ -59,22 +65,34 @@ export default function SchedulePage() {
     await load();
     setLoading(false);
   }
-  async function markOff(id: string) {
+  async function reopen() {
+    setLoading(true);
+    const response = await fetch("/api/schedule", {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ year, month, status: "DRAFT" }),
+    });
+    const body = await response.json();
+    setMessage(response.ok ? "Schedule reopened for changes. Review and approve it again when ready." : body.error ?? "Could not reopen the schedule.");
+    await load();
+    setLoading(false);
+  }
+  async function editAssignment(id: string, status: string, shiftId?: string | null) {
     const response = await fetch("/api/schedule/assignment", {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ id, status: "OFF" }),
+      body: JSON.stringify({ id, status, shiftId: status === "WORKING" ? shiftId : null }),
     });
     setMessage(
       response.ok
-        ? "Assignment changed to off."
+        ? "Assignment updated. Coverage checks have been refreshed."
         : (await response.json()).error,
     );
     await load();
   }
   const working =
     period?.assignments.filter((a) => a.status === "WORKING") ?? [];
-  const grouped = Object.groupBy(working, (a) => a.date.slice(0, 10));
+  const grouped = Object.groupBy(period?.assignments ?? [], (a) => a.date.slice(0, 10));
   return (
     <div className="mx-auto max-w-7xl">
       <PageHeading
@@ -128,6 +146,16 @@ export default function SchedulePage() {
             Approve schedule
           </button>
         )}
+        {period?.status === "APPROVED" && (
+          <button
+            disabled={loading}
+            onClick={reopen}
+            className="flex items-center gap-2 rounded-xl border border-amber-300 bg-amber-50 px-5 py-3 font-bold text-amber-800"
+          >
+            <LockOpen className="h-4 w-4" />
+            Reopen for changes
+          </button>
+        )}
       </div>
       {message && (
         <p className="mb-5 rounded-xl bg-blue-50 p-4 text-sm font-semibold text-blue-700">
@@ -143,6 +171,23 @@ export default function SchedulePage() {
           <p className="mb-4 text-sm font-semibold text-slate-500">
             Status: {period.status} · {working.length} working assignments
           </p>
+          {!!period.warnings?.length && (
+            <section className="mb-6 rounded-2xl border border-amber-200 bg-amber-50 p-5">
+              <div className="flex items-center gap-2 font-bold text-amber-900">
+                <AlertTriangle className="h-5 w-5" />
+                Coverage review required · {period.warnings.length} issue{period.warnings.length === 1 ? "" : "s"}
+              </div>
+              <div className="mt-3 grid gap-2 md:grid-cols-2">
+                {period.warnings.slice(0, 12).map((warning, index) => (
+                  <div key={`${warning.date}-${warning.shiftId}-${warning.code}-${index}`} className="rounded-xl bg-white px-4 py-3 text-sm text-amber-900">
+                    <b>{new Date(`${warning.date}T12:00:00`).toLocaleDateString("en", { weekday: "short", month: "short", day: "numeric" })}</b>
+                    <span className="ml-2">{warning.message}</span>
+                  </div>
+                ))}
+              </div>
+              {period.warnings.length > 12 && <p className="mt-3 text-xs font-semibold text-amber-800">Showing the first 12 issues. Adjust staffing rules or assignments and refresh the schedule to review the remainder.</p>}
+            </section>
+          )}
           <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
             {Object.entries(grouped).map(([date, items]) => (
               <article
@@ -160,20 +205,34 @@ export default function SchedulePage() {
                   {items?.map((a) => (
                     <div
                       key={a.id}
-                      className="flex justify-between rounded-lg bg-slate-50 px-3 py-2 text-sm"
+                      className="grid grid-cols-[minmax(0,1fr)_110px] gap-2 rounded-lg bg-slate-50 px-3 py-2 text-sm"
                     >
-                      <b>{a.employee.name}</b>
-                      <span className="ml-auto text-slate-500">
-                        {a.shift?.name}
-                      </span>
-                      {period.status !== "PUBLISHED" && (
-                        <button
-                          onClick={() => markOff(a.id)}
-                          className="ml-2 rounded-md bg-white px-2 text-xs font-bold text-slate-400 hover:text-red-600"
+                      <div className="min-w-0">
+                        <b className="block truncate">{a.employee.name}</b>
+                        {a.status === "WORKING" && period.status !== "PUBLISHED" ? (
+                          <select
+                            aria-label={`Shift for ${a.employee.name}`}
+                            value={a.shift?.id ?? ""}
+                            onChange={(event) => void editAssignment(a.id, "WORKING", event.target.value)}
+                            className="mt-1 w-full rounded-md border border-slate-200 bg-white px-2 py-1 text-xs"
+                          >
+                            {shifts.map((shift) => <option key={shift.id} value={shift.id}>{shift.name} · {shift.startTime}–{shift.endTime}</option>)}
+                          </select>
+                        ) : <span className="text-xs text-slate-500">{a.shift?.name ?? a.status}</span>}
+                      </div>
+                      {period.status !== "PUBLISHED" ? (
+                        <select
+                          aria-label={`Status for ${a.employee.name}`}
+                          value={a.status}
+                          onChange={(event) => void editAssignment(a.id, event.target.value, event.target.value === "WORKING" ? shifts[0]?.id : null)}
+                          className="h-9 rounded-lg border border-slate-200 bg-white px-2 text-xs font-bold"
                         >
-                          Set off
-                        </button>
-                      )}
+                          <option value="WORKING">Working</option>
+                          <option value="OFF">Off</option>
+                          <option value="PTO">PTO</option>
+                          <option value="SICK">Sick</option>
+                        </select>
+                      ) : <span className="text-right text-xs font-bold text-slate-500">{a.status}</span>}
                     </div>
                   ))}
                 </div>
