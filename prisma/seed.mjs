@@ -24,7 +24,7 @@ async function main() {
     const account = await prisma.account.upsert({ where: { code: accountData.code }, create: accountData, update: {} });
     const workstreams = accountData.code === "TRADELING"
       ? [
-          ["Calls", "Phone", true, "EVERYONE", 2], ["Chats", "Live channels", true, "FOCUS", 1], ["CS-Supp Chat", "Chat groups", false, "SECONDARY", 2], ["Sales-CX Chat", "Chat groups", false, "SECONDARY", 2], ["International-OMT-Supp", "Chat groups", false, "SECONDARY", 2], ["Inbound", "Chat groups", false, "SECONDARY", 2],
+          ["Calls", "Phone", true, "EVERYONE", 2], ["Chats", "Live channels", true, "FOCUS", 1], ["Slack Groups & Channels Support", "Slack support", false, "SECONDARY", 2],
           ["Stakeholder Emails", "Emails", false, "SECONDARY", 2], ["Open Emails", "Emails", false, "FOCUS", 1], ["Returns & CX Escalations", "Cases", false, "FOCUS", 1], ["Internal Emails & Tickets", "Cases", false, "FOCUS", 1], ["Seller Verification", "Reviews", false, "SECONDARY", 2], ["Social Reviews", "Reviews", false, "SECONDARY", 2],
         ]
       : [["Calls", "Phone", true, "EVERYONE", 2], ["Chats", "Live channels", true, "FOCUS", 1], ["Open Emails", "Emails", false, "FOCUS", 1], ["Internal Emails & Tickets", "Cases", false, "FOCUS", 1]];
@@ -32,6 +32,21 @@ async function main() {
       const rotationOrder = { "Chats": 1, "Returns & CX Escalations": 2, "Open Emails": 3, "Internal Emails & Tickets": 4 }[name] ?? 0;
       const existing = await prisma.taskCategory.findFirst({ where: { accountId: account.id, name } });
       if (!existing) await prisma.taskCategory.create({ data: { accountId: account.id, name, groupName, isLive, mode, defaultPriority, rotationOrder, order } });
+    }
+    if (accountData.code === "TRADELING") {
+      const consolidated = await prisma.taskCategory.findFirstOrThrow({ where: { accountId: account.id, name: "Slack Groups & Channels Support" } });
+      const legacyNames = ["CS-Supp Chat", "Sales-CX Chat", "International-OMT-Supp", "Inbound"];
+      const legacy = await prisma.taskCategory.findMany({ where: { accountId: account.id, name: { in: legacyNames } }, include: { assignments: { orderBy: { createdAt: "asc" } } } });
+      const assignments = legacy.flatMap((category) => category.assignments);
+      const uniqueAssignments = new Map(assignments.map((assignment) => [`${assignment.date.toISOString()}:${assignment.employeeId}`, assignment]));
+      for (const assignment of uniqueAssignments.values()) {
+        await prisma.taskAssignment.upsert({
+          where: { date_employeeId_categoryId: { date: assignment.date, employeeId: assignment.employeeId, categoryId: consolidated.id } },
+          create: { date: assignment.date, employeeId: assignment.employeeId, categoryId: consolidated.id, note: assignment.note, priority: 2, startTime: assignment.startTime, endTime: assignment.endTime },
+          update: {},
+        });
+      }
+      if (legacy.length) await prisma.taskCategory.deleteMany({ where: { id: { in: legacy.map((category) => category.id) } } });
     }
     for (const dayOfWeek of days) await prisma.accountOperatingWindow.upsert({ where: { accountId_dayOfWeek_startTime_endTime: { accountId: account.id, dayOfWeek, startTime, endTime } }, create: { accountId: account.id, dayOfWeek, startTime, endTime }, update: {} });
     for (const dayOfWeek of days) {
