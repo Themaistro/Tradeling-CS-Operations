@@ -213,6 +213,12 @@ model AppSettings {
   automationEnabled  Boolean @default(false)
   slackChannelId     String  @default("")
   slackMessageHeader String  @default("Customer Service Daily Schedule")
+  workingDays        String  @default("0,1,2,3,4,5,6")
+  weekStartsOn       Int     @default(0)
+  defaultBreakMinutes Int    @default(60)
+  requireAcknowledgement Boolean @default(true)
+  includeBreaksInSlack Boolean @default(true)
+  includeNotesInSlack Boolean @default(true)
   maxConsecutiveDays Int     @default(5)
   updatedAt          DateTime @updatedAt
 }
