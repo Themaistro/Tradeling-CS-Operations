@@ -71,7 +71,7 @@ export default function SchedulePage() {
     setLoading(true);
     const response = await fetch("/api/schedule", { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ year, month, status: "PUBLISHED" }) });
     const body = await response.json();
-    setMessage(response.ok ? "Schedule published and locked. It can no longer be edited or regenerated." : body.error ?? "Could not publish the schedule.");
+    setMessage(response.ok ? "Schedule published. Reopen it whenever you need to make changes or generate a replacement." : body.error ?? "Could not publish the schedule.");
     await load();
     setLoading(false);
   }
@@ -110,13 +110,14 @@ export default function SchedulePage() {
         title="Schedule Generator"
         description="Generate, review, and approve the monthly roster before using it in daily operations."
       />
-      <div className="mb-6 flex flex-wrap items-end gap-3 rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+      <div className="mb-6 rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+        <div className="grid gap-4 md:grid-cols-[minmax(180px,1fr)_140px_auto] md:items-end">
         <label className="text-sm font-semibold">
           Month
           <select
             value={month}
             onChange={(e) => setMonth(Number(e.target.value))}
-            className="mt-2 block rounded-xl border border-slate-200 px-4 py-3"
+            className="mt-2 block w-full rounded-xl border border-slate-200 px-4 py-3"
           >
             {Array.from({ length: 12 }, (_, i) => (
               <option key={i} value={i + 1}>
@@ -134,7 +135,7 @@ export default function SchedulePage() {
             className="mt-2 block w-28 rounded-xl border border-slate-200 px-4 py-3"
           />
         </label>
-        <button
+        {(!period || period.status === "DRAFT") && <button
           disabled={loading}
           onClick={generate}
           className="flex items-center gap-2 rounded-xl bg-orange-500 px-5 py-3 font-bold text-white"
@@ -144,8 +145,10 @@ export default function SchedulePage() {
           ) : (
             <CalendarDays className="h-4 w-4" />
           )}
-          Generate schedule
-        </button>
+          {period?.status === "DRAFT" ? "Regenerate draft" : "Generate schedule"}
+        </button>}
+        </div>
+        <div className="mt-4 flex flex-wrap gap-3 border-t border-slate-100 pt-4">
         {period?.status === "DRAFT" && (
           <button
             disabled={loading}
@@ -162,6 +165,11 @@ export default function SchedulePage() {
             <button disabled={loading} onClick={publish} className="flex items-center gap-2 rounded-xl bg-slate-950 px-5 py-3 font-bold text-white"><CheckCircle2 className="h-4 w-4" />Publish and lock</button>
           </>
         )}
+        {period?.status === "PUBLISHED" && (
+          <button disabled={loading} onClick={reopen} className="flex items-center gap-2 rounded-xl border border-amber-300 bg-amber-50 px-5 py-3 font-bold text-amber-800"><LockOpen className="h-4 w-4" />Reopen for changes</button>
+        )}
+        {period && <span className={`inline-flex items-center rounded-xl px-4 py-3 text-xs font-bold ${period.status === "PUBLISHED" ? "bg-emerald-50 text-emerald-700" : period.status === "APPROVED" ? "bg-blue-50 text-blue-700" : "bg-slate-100 text-slate-600"}`}>Status: {period.status}</span>}
+        </div>
       </div>
       {message && (
         <p className="mb-5 rounded-xl bg-blue-50 p-4 text-sm font-semibold text-blue-700">
@@ -175,7 +183,7 @@ export default function SchedulePage() {
       ) : (
         <div>
           <p className="mb-4 text-sm font-semibold text-slate-500">
-            Status: {period.status} · {working.length} working assignments
+            {working.length} working assignments in this monthly roster
           </p>
           {!!period.warnings?.length && (
             <section className="mb-6 rounded-2xl border border-amber-200 bg-amber-50 p-5">
