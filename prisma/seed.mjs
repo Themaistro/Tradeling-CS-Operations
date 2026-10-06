@@ -51,7 +51,10 @@ async function main() {
     for (const dayOfWeek of days) await prisma.accountOperatingWindow.upsert({ where: { accountId_dayOfWeek_startTime_endTime: { accountId: account.id, dayOfWeek, startTime, endTime } }, create: { accountId: account.id, dayOfWeek, startTime, endTime }, update: {} });
     for (const dayOfWeek of days) {
       const windows = accountData.code === "HUGO_BOSS" ? [["09:00", "18:00"], ["18:00", "22:00"]] : [["09:00", "18:00"]];
-      for (const [coverageStart, coverageEnd] of windows) await prisma.coverageRequirement.upsert({ where: { accountId_dayOfWeek_startTime_endTime: { accountId: account.id, dayOfWeek, startTime: coverageStart, endTime: coverageEnd } }, create: { accountId: account.id, dayOfWeek, startTime: coverageStart, endTime: coverageEnd, minimumStaff: 1 }, update: {} });
+      for (const [coverageStart, coverageEnd] of windows) {
+        const minimumStaff = accountData.code === "TRADELING" ? 4 : 1;
+        await prisma.coverageRequirement.upsert({ where: { accountId_dayOfWeek_startTime_endTime: { accountId: account.id, dayOfWeek, startTime: coverageStart, endTime: coverageEnd } }, create: { accountId: account.id, dayOfWeek, startTime: coverageStart, endTime: coverageEnd, minimumStaff }, update: {} });
+      }
     }
     const employees = await prisma.employee.findMany({ where: { status: "ACTIVE" }, select: { id: true } });
     for (const employee of employees) await prisma.employeeAccountCapability.upsert({ where: { employeeId_accountId: { employeeId: employee.id, accountId: account.id } }, create: { employeeId: employee.id, accountId: account.id }, update: {} });

@@ -13,6 +13,35 @@ type Input = {
   priorWorkingDates?: Record<string, string[]>;
 };
 
+function buildConsecutiveOffPlan(input: Input) {
+  if ((input.maxWeeklyDays ?? 5) !== 5 || input.operatingDays.length !== 7) return null;
+  const required = Array.from({ length: 7 }, (_, day) => input.shifts.reduce((sum, shift) => sum + (shift.minimumByDay[day] ?? 0), 0));
+  const capacity = required.map((count) => Math.max(0, input.employees.length - count));
+  if (capacity.reduce((sum, count) => sum + count, 0) < input.employees.length * 2) return null;
+  const employees = [...input.employees].sort((left, right) => right.dayOffPreferences.length - left.dayOffPreferences.length || left.name.localeCompare(right.name));
+  const plan = new Map<string, Set<number>>();
+  const pairScore = (employee: ScheduleEmployee, firstDay: number) => {
+    const secondDay = (firstDay + 1) % 7;
+    const rank = (day: number) => employee.dayOffPreferences.find((item) => item.dayOfWeek === day)?.rank ?? 99;
+    return (rank(firstDay) === 1 ? 50 : rank(firstDay) === 2 ? 20 : 0) + (rank(secondDay) === 1 ? 50 : rank(secondDay) === 2 ? 20 : 0);
+  };
+  const assign = (index: number): boolean => {
+    if (index === employees.length) return true;
+    const employee = employees[index];
+    const pairs = Array.from({ length: 7 }, (_, day) => day).sort((left, right) => pairScore(employee, right) - pairScore(employee, left));
+    for (const firstDay of pairs) {
+      const secondDay = (firstDay + 1) % 7;
+      if (capacity[firstDay] < 1 || capacity[secondDay] < 1) continue;
+      capacity[firstDay] -= 1; capacity[secondDay] -= 1;
+      plan.set(employee.id, new Set([firstDay, secondDay]));
+      if (assign(index + 1)) return true;
+      plan.delete(employee.id); capacity[firstDay] += 1; capacity[secondDay] += 1;
+    }
+    return false;
+  };
+  return assign(0) ? plan : null;
+}
+
 function leaveStatus(type: ScheduleEmployee["timeOff"][number]["type"]): GeneratedAssignment["status"] {
   if (type === "SICK") return "SICK";
   return "PTO";
@@ -28,6 +57,7 @@ export function generateSchedule(input: Input) {
   const weeklyCount = new Map<string, number>();
   const weeklyShift = new Map<string, string>();
   const weekStartsOn = input.weekStartsOn ?? 0;
+  const consecutiveOffPlan = buildConsecutiveOffPlan(input);
   const weekKeyFor = (date: Date) => {
     const start = new Date(date);
     start.setDate(date.getDate() - ((date.getDay() - weekStartsOn + 7) % 7));
@@ -69,6 +99,7 @@ export function generateSchedule(input: Input) {
       const candidates = available
         .filter((employee) => !assigned.has(employee.id) && (consecutive.get(employee.id) ?? 0) < input.maxConsecutiveDays)
         .filter((employee) => (weeklyCount.get(employee.id) ?? 0) < (input.maxWeeklyDays ?? 5))
+        .filter((employee) => !consecutiveOffPlan?.get(employee.id)?.has(weekday))
         .sort((a, b) => {
           const aDayOffRank = a.dayOffPreferences.find((item) => item.dayOfWeek === weekday)?.rank ?? 99;
           const bDayOffRank = b.dayOffPreferences.find((item) => item.dayOfWeek === weekday)?.rank ?? 99;
