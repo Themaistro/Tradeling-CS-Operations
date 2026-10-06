@@ -35,6 +35,12 @@ export async function GET(request: Request) {
   if (!Number.isInteger(year) || !Number.isInteger(month) || month < 1 || month > 12) return NextResponse.json({ error: "Invalid month." }, { status: 400 });
   const period = await prisma.schedulePeriod.findUnique({ where: { year_month: { year, month } }, include: { assignments: { include: { employee: true, shift: true }, orderBy: { date: "asc" } } } });
   if (!period) return NextResponse.json(null);
+  const monthStart = new Date(Date.UTC(year, month - 1, 1));
+  const monthEnd = new Date(Date.UTC(year, month, 1));
+  const breaks = await prisma.breakSchedule.findMany({
+    where: { date: { gte: monthStart, lt: monthEnd } },
+    orderBy: [{ date: "asc" }, { startTime: "asc" }],
+  });
   const [rules, accounts] = await Promise.all([
     prisma.staffingRule.findMany({ include: { shift: true } }),
     prisma.account.findMany({ where: { active: true }, include: { coverageRequirements: true, employeeCapabilities: true } }),
@@ -60,7 +66,7 @@ export async function GET(request: Request) {
       if(bilingual<requirement.minimumBilingual)warnings.push({date,shiftId:`account:${account.id}`,severity:"critical",code:"BILINGUAL_SHORTAGE",message:`${account.name} ${requirement.startTime}–${requirement.endTime} needs ${requirement.minimumBilingual-bilingual} more bilingual agent(s).`});
     }
   }
-  return NextResponse.json({ ...period, warnings });
+  return NextResponse.json({ ...period, breaks, warnings });
 }
 
 export async function POST(request: Request) {
@@ -86,7 +92,12 @@ export async function POST(request: Request) {
   const period = await prisma.$transaction(async tx => {
     const saved = await tx.schedulePeriod.upsert({ where: { year_month: { year, month } }, create: { year, month, generatedAt: new Date() }, update: { status: "DRAFT", generatedAt: new Date() } });
     await tx.shiftAssignment.deleteMany({ where: { schedulePeriodId: saved.id } });
-    await tx.shiftAssignment.createMany({ data: generated.assignments.map(a => ({ schedulePeriodId: saved.id, employeeId: a.employeeId, date: new Date(`${a.date}T00:00:00.000Z`), status: a.status, shiftId: a.shiftId })) });
+    await tx.shiftAssignment.createMany({ data: generated.assignments.map(a => {
+      const shift = shifts.find((item) => item.id === a.shiftId);
+      const weekday = new Date(`${a.date}T00:00:00.000Z`).getUTCDay();
+      const workLocation = a.status === "WORKING" && ([0, 5, 6].includes(weekday) || /late|night/i.test(shift?.name ?? "")) ? "WFH" : "OFFICE";
+      return { schedulePeriodId: saved.id, employeeId: a.employeeId, date: new Date(`${a.date}T00:00:00.000Z`), status: a.status, shiftId: a.shiftId, workLocation };
+    }) });
     return saved;
   });
   return NextResponse.json({ period, warnings: generated.warnings });

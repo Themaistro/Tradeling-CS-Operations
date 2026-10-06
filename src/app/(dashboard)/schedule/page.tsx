@@ -1,6 +1,6 @@
 "use client";
 import { useEffect, useState } from "react";
-import { AlertTriangle, CalendarDays, CheckCircle2, LoaderCircle, LockOpen } from "lucide-react";
+import { AlertTriangle, CalendarDays, CheckCircle2, ChevronLeft, ChevronRight, LayoutGrid, List, LoaderCircle, LockOpen } from "lucide-react";
 import { PageHeading } from "@/components/ui/page-heading";
 type Period = {
   status: string;
@@ -9,11 +9,30 @@ type Period = {
     id: string;
     date: string;
     status: string;
-    employee: { name: string };
+    employee: { id: string; name: string; isBilingual: boolean };
     shift: { id: string; name: string } | null;
+    workLocation: "OFFICE" | "WFH";
   }[];
+  breaks?: { id: string; date: string; employeeId: string; type: string; startTime: string; endTime: string }[];
 } | null;
 type Shift = { id: string; name: string; startTime: string; endTime: string };
+type Assignment = NonNullable<Period>["assignments"][number];
+
+function dateKey(date: Date) {
+  return date.toISOString().slice(0, 10);
+}
+
+function readableTime(value: string) {
+  const [hours, minutes] = value.split(":").map(Number);
+  return new Date(2020, 0, 1, hours, minutes).toLocaleTimeString("en", { hour: "numeric", minute: "2-digit" });
+}
+
+function assignmentTone(assignment?: Assignment) {
+  if (!assignment || assignment.status === "OFF") return "bg-orange-50 text-orange-900";
+  if (assignment.status !== "WORKING") return "bg-violet-50 text-violet-800";
+  const name = assignment.shift?.name.toLowerCase() ?? "";
+  return name.includes("late") || name.includes("night") ? "bg-blue-50 text-blue-900" : "bg-emerald-50 text-emerald-900";
+}
 export default function SchedulePage() {
   const now = new Date();
   const [year, setYear] = useState(now.getFullYear());
@@ -22,6 +41,8 @@ export default function SchedulePage() {
   const [loading, setLoading] = useState(false);
   const [message, setMessage] = useState("");
   const [shifts, setShifts] = useState<Shift[]>([]);
+  const [view, setView] = useState<"cards" | "weekly">("cards");
+  const [weekIndex, setWeekIndex] = useState(0);
   const load = () =>
     fetch(`/api/schedule?year=${year}&month=${month}`)
       .then((r) => r.json())
@@ -87,11 +108,11 @@ export default function SchedulePage() {
     await load();
     setLoading(false);
   }
-  async function editAssignment(id: string, status: string, shiftId?: string | null) {
+  async function editAssignment(id: string, status: string, shiftId?: string | null, workLocation?: "OFFICE" | "WFH") {
     const response = await fetch("/api/schedule/assignment", {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ id, status, shiftId: status === "WORKING" ? shiftId : null }),
+      body: JSON.stringify({ id, status, shiftId: status === "WORKING" ? shiftId : null, workLocation }),
     });
     setMessage(
       response.ok
@@ -103,6 +124,30 @@ export default function SchedulePage() {
   const working =
     period?.assignments.filter((a) => a.status === "WORKING") ?? [];
   const grouped = Object.groupBy(period?.assignments ?? [], (a) => a.date.slice(0, 10));
+  const employees = Array.from(new Map((period?.assignments ?? []).map((assignment) => [assignment.employee.id, assignment.employee])).values()).sort((a, b) => a.name.localeCompare(b.name));
+  const firstDay = new Date(Date.UTC(year, month - 1, 1));
+  const lastDay = new Date(Date.UTC(year, month, 0));
+  const gridStart = new Date(firstDay);
+  gridStart.setUTCDate(gridStart.getUTCDate() - ((gridStart.getUTCDay() + 6) % 7));
+  const gridEnd = new Date(lastDay);
+  gridEnd.setUTCDate(gridEnd.getUTCDate() + ((7 - ((gridEnd.getUTCDay() + 6) % 7) - 1) % 7));
+  const weeks = Array.from({ length: Math.ceil((gridEnd.getTime() - gridStart.getTime() + 86400000) / 604800000) }, (_, index) =>
+    Array.from({ length: 7 }, (__, day) => new Date(gridStart.getTime() + (index * 7 + day) * 86400000)),
+  );
+  const selectedWeek = weeks[Math.min(weekIndex, Math.max(0, weeks.length - 1))] ?? [];
+  const rosterSections = ["Day · Arabic", "Day · Other", "Late · Arabic", "Late · Other"].map((label) => {
+    const late = label.startsWith("Late");
+    const bilingual = label.endsWith("Arabic");
+    return {
+      label,
+      employees: employees.filter((employee) => {
+        const weekAssignments = period?.assignments.filter((item) => item.employee.id === employee.id && selectedWeek.some((day) => dateKey(day) === item.date.slice(0, 10)) && item.status === "WORKING") ?? [];
+        const lateDays = weekAssignments.filter((item) => /late|night/i.test(item.shift?.name ?? "")).length;
+        const isLate = lateDays > weekAssignments.length / 2;
+        return isLate === late && employee.isBilingual === bilingual;
+      }),
+    };
+  }).filter((section) => section.employees.length);
   return (
     <div className="mx-auto max-w-7xl">
       <PageHeading
@@ -116,7 +161,7 @@ export default function SchedulePage() {
           Month
           <select
             value={month}
-            onChange={(e) => setMonth(Number(e.target.value))}
+            onChange={(e) => { setMonth(Number(e.target.value)); setWeekIndex(0); }}
             className="mt-2 block w-full rounded-xl border border-slate-200 px-4 py-3"
           >
             {Array.from({ length: 12 }, (_, i) => (
@@ -130,7 +175,7 @@ export default function SchedulePage() {
           Year
           <input
             value={year}
-            onChange={(e) => setYear(Number(e.target.value))}
+            onChange={(e) => { setYear(Number(e.target.value)); setWeekIndex(0); }}
             type="number"
             className="mt-2 block w-28 rounded-xl border border-slate-200 px-4 py-3"
           />
@@ -185,6 +230,17 @@ export default function SchedulePage() {
           <p className="mb-4 text-sm font-semibold text-slate-500">
             {working.length} working assignments in this monthly roster
           </p>
+          <div className="mb-5 flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-slate-200 bg-white p-3 shadow-sm">
+            <div className="inline-flex rounded-xl bg-slate-100 p-1" aria-label="Schedule view">
+              <button onClick={() => setView("cards")} className={`flex items-center gap-2 rounded-lg px-4 py-2 text-sm font-bold transition ${view === "cards" ? "bg-white text-slate-950 shadow-sm" : "text-slate-500"}`}><LayoutGrid className="h-4 w-4" />Cards</button>
+              <button onClick={() => setView("weekly")} className={`flex items-center gap-2 rounded-lg px-4 py-2 text-sm font-bold transition ${view === "weekly" ? "bg-white text-slate-950 shadow-sm" : "text-slate-500"}`}><List className="h-4 w-4" />Weekly grid</button>
+            </div>
+            {view === "weekly" && <div className="flex items-center gap-2">
+              <button aria-label="Previous week" disabled={weekIndex === 0} onClick={() => setWeekIndex((value) => Math.max(0, value - 1))} className="rounded-lg border border-slate-200 p-2 text-slate-600 disabled:opacity-30"><ChevronLeft className="h-4 w-4" /></button>
+              <span className="min-w-44 text-center text-sm font-bold text-slate-700">{selectedWeek[0]?.toLocaleDateString("en", { month: "short", day: "numeric", timeZone: "UTC" })} – {selectedWeek[6]?.toLocaleDateString("en", { month: "short", day: "numeric", year: "numeric", timeZone: "UTC" })}</span>
+              <button aria-label="Next week" disabled={weekIndex >= weeks.length - 1} onClick={() => setWeekIndex((value) => Math.min(weeks.length - 1, value + 1))} className="rounded-lg border border-slate-200 p-2 text-slate-600 disabled:opacity-30"><ChevronRight className="h-4 w-4" /></button>
+            </div>}
+          </div>
           {!!period.warnings?.length && (
             <section className="mb-6 rounded-2xl border border-amber-200 bg-amber-50 p-5">
               <div className="flex items-center gap-2 font-bold text-amber-900">
@@ -202,7 +258,37 @@ export default function SchedulePage() {
               {period.warnings.length > 12 && <p className="mt-3 text-xs font-semibold text-amber-800">Showing the first 12 issues. Adjust staffing rules or assignments and refresh the schedule to review the remainder.</p>}
             </section>
           )}
-          <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
+          {view === "weekly" ? <div className="overflow-x-auto rounded-2xl border border-slate-200 bg-white shadow-sm">
+            <table className="min-w-[1080px] w-full border-collapse text-sm">
+              <thead>
+                <tr className="bg-slate-950 text-white">
+                  <th className="sticky left-0 z-20 w-48 min-w-48 border-r border-slate-700 bg-slate-950 px-4 py-4 text-left">Team member</th>
+                  {selectedWeek.map((day) => <th key={dateKey(day)} className={`min-w-32 border-r border-slate-700 px-3 py-3 text-center ${day.getUTCMonth() !== month - 1 ? "text-slate-500" : ""}`}><span className="block text-xs uppercase tracking-wider">{day.toLocaleDateString("en", { weekday: "short", timeZone: "UTC" })}</span><span className="mt-1 block text-base">{day.toLocaleDateString("en", { month: "short", day: "numeric", timeZone: "UTC" })}</span></th>)}
+                </tr>
+              </thead>
+              <tbody>
+                {rosterSections.flatMap((section) => [
+                  <tr key={`section-${section.label}`} className="border-t border-slate-200 bg-slate-100"><th colSpan={8} className="px-4 py-2 text-left text-xs font-extrabold uppercase tracking-wider text-slate-500">{section.label}</th></tr>,
+                  ...section.employees.map((employee) => <tr key={employee.id} className="border-t border-slate-200">
+                  <th className="sticky left-0 z-10 border-r border-slate-200 bg-white px-4 py-4 text-left font-bold text-slate-900">{employee.name}</th>
+                  {selectedWeek.map((day) => {
+                    const key = dateKey(day);
+                    const assignment = period.assignments.find((item) => item.employee.id === employee.id && item.date.slice(0, 10) === key);
+                    const breaks = period.breaks?.filter((item) => item.employeeId === employee.id && item.date.slice(0, 10) === key) ?? [];
+                    const outside = day.getUTCMonth() !== month - 1;
+                    return <td key={key} className={`border-r border-slate-200 p-1 align-middle ${outside ? "bg-slate-50" : ""}`}>
+                      {outside ? <div className="min-h-20" /> : <div className={`flex min-h-20 flex-col items-center justify-center rounded-lg px-2 py-3 text-center ${assignmentTone(assignment)}`}>
+                        {!assignment || assignment.status === "OFF" ? <b>OFF</b> : assignment.status !== "WORKING" ? <><b>{assignment.status}</b><span className="mt-1 text-xs opacity-70">Leave</span></> : <><b>{assignment.shift?.name ?? "Working"}</b>{assignment.shift && <span className="mt-1 text-xs">{readableTime(shifts.find((shift) => shift.id === assignment.shift?.id)?.startTime ?? "09:00")} – {readableTime(shifts.find((shift) => shift.id === assignment.shift?.id)?.endTime ?? "18:00")}</span>}{breaks.map((item) => <span key={item.id} className="mt-1 text-[11px] font-semibold opacity-75">Break {readableTime(item.startTime)}–{readableTime(item.endTime)}</span>)}</>}
+                        {assignment?.status === "WORKING" && (period.status === "DRAFT" ? <button onClick={() => void editAssignment(assignment.id, assignment.status, assignment.shift?.id, assignment.workLocation === "WFH" ? "OFFICE" : "WFH")} className={`mt-2 rounded-md px-2 py-1 text-[10px] font-extrabold ${assignment.workLocation === "WFH" ? "bg-blue-600 text-white" : "bg-white/70 text-slate-500 ring-1 ring-slate-300"}`}>{assignment.workLocation === "WFH" ? "WFH" : "Office"}</button> : assignment.workLocation === "WFH" ? <span className="mt-2 rounded-md bg-blue-600 px-2 py-1 text-[10px] font-extrabold text-white">WFH</span> : null)}
+                      </div>}
+                    </td>;
+                  })}
+                </tr>),
+                ])}
+              </tbody>
+            </table>
+            <div className="flex flex-wrap gap-4 border-t border-slate-200 px-4 py-3 text-xs font-semibold text-slate-600"><span><i className="mr-2 inline-block h-3 w-3 rounded bg-emerald-100" />Day shift</span><span><i className="mr-2 inline-block h-3 w-3 rounded bg-blue-100" />Late shift</span><span><i className="mr-2 inline-block h-3 w-3 rounded bg-orange-100" />Off</span><span><i className="mr-2 inline-block h-3 w-3 rounded bg-violet-100" />Leave</span></div>
+          </div> : <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
             {Object.entries(grouped).map(([date, items]) => (
               <article
                 key={date}
@@ -252,7 +338,7 @@ export default function SchedulePage() {
                 </div>
               </article>
             ))}
-          </div>
+          </div>}
         </div>
       )}
     </div>
