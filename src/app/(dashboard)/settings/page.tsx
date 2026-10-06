@@ -420,7 +420,7 @@ export default function SettingsPage() {
               <SectionHeader
                 icon={ClipboardList}
                 title="Break policy"
-                description="Control break entitlement and coverage timing. Account workstreams are managed in Operations."
+                description="Control break entitlement and coverage timing. Account tasks are managed in Operations."
               />
               <div className="p-6">
                 <div className="max-w-3xl">

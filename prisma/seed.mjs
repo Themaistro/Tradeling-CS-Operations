@@ -22,13 +22,13 @@ async function main() {
   for (const accountDefault of accountDefaults) {
     const { days, startTime, endTime, ...accountData } = accountDefault;
     const account = await prisma.account.upsert({ where: { code: accountData.code }, create: accountData, update: {} });
-    const workstreams = accountData.code === "TRADELING"
+    const tasks = accountData.code === "TRADELING"
       ? [
           ["Calls", "Phone", true, "EVERYONE", 2], ["Chats", "Live channels", true, "FOCUS", 1], ["Slack Groups & Channels Support", "Slack support", false, "SECONDARY", 2],
           ["Stakeholder Emails", "Emails", false, "SECONDARY", 2], ["Open Emails", "Emails", false, "FOCUS", 1], ["Returns & CX Escalations", "Cases", false, "FOCUS", 1], ["Internal Emails & Tickets", "Cases", false, "FOCUS", 1], ["Seller Verification", "Reviews", false, "SECONDARY", 2], ["Social Reviews", "Reviews", false, "SECONDARY", 2],
         ]
       : [["Calls", "Phone", true, "EVERYONE", 2], ["Chats", "Live channels", true, "FOCUS", 1], ["Open Emails", "Emails", false, "FOCUS", 1], ["Internal Emails & Tickets", "Cases", false, "FOCUS", 1]];
-    for (const [order, [name, groupName, isLive, mode, defaultPriority]] of workstreams.entries()) {
+    for (const [order, [name, groupName, isLive, mode, defaultPriority]] of tasks.entries()) {
       const rotationOrder = { "Chats": 1, "Returns & CX Escalations": 2, "Open Emails": 3, "Internal Emails & Tickets": 4 }[name] ?? 0;
       const existing = await prisma.taskCategory.findFirst({ where: { accountId: account.id, name } });
       if (!existing) await prisma.taskCategory.create({ data: { accountId: account.id, name, groupName, isLive, mode, defaultPriority, rotationOrder, order } });
