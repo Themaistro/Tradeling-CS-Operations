@@ -1,0 +1,5 @@
+import { NextResponse } from "next/server";
+import { z } from "zod";
+import { prisma } from "@/lib/db/prisma";
+const schema=z.object({date:z.string().regex(/^\d{4}-\d{2}-\d{2}$/),employeeId:z.string(),startTime:z.string().regex(/^\d{2}:\d{2}$/),endTime:z.string().regex(/^\d{2}:\d{2}$/)});
+export async function POST(request:Request){const parsed=schema.safeParse(await request.json());if(!parsed.success)return NextResponse.json({error:"Check the break time."},{status:400});const date=new Date(`${parsed.data.date}T00:00:00.000Z`);const working=await prisma.shiftAssignment.findFirst({where:{date,employeeId:parsed.data.employeeId,status:"WORKING",schedulePeriod:{status:{in:["APPROVED","PUBLISHED"]}}}});if(!working)return NextResponse.json({error:"Breaks can only be added for employees working that day."},{status:409});const {employeeId,startTime,endTime}=parsed.data;return NextResponse.json(await prisma.breakSchedule.upsert({where:{date_employeeId:{date,employeeId}},create:{date,employeeId,startTime,endTime},update:{startTime,endTime}}))}

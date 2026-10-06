@@ -26,3 +26,10 @@ export async function POST(request: Request) {
   });
   return NextResponse.json({ period, warnings: generated.warnings });
 }
+
+export async function PATCH(request: Request) {
+  const { year, month, status } = await request.json();
+  if (!["DRAFT", "APPROVED", "PUBLISHED"].includes(status)) return NextResponse.json({ error: "Invalid schedule status." }, { status: 400 });
+  const period = await prisma.schedulePeriod.update({ where: { year_month: { year: Number(year), month: Number(month) } }, data: { status, approvedAt: status === "APPROVED" ? new Date() : undefined } });
+  return NextResponse.json(period);
+}
