@@ -11,7 +11,7 @@ export async function GET() {
   return NextResponse.json({ settings, shifts, taskCategories, slackConfigured: Boolean(process.env.SLACK_BOT_TOKEN && process.env.SLACK_APP_TOKEN) });
 }
 
-const schema = z.object({ timezone: z.string().min(1), postTime: z.string().regex(/^\d{2}:\d{2}$/), slackChannelId: z.string().trim(), slackMessageHeader: z.string().trim().min(1).max(150), automationEnabled: z.boolean(), maxConsecutiveDays: z.number().int().min(1).max(7), workingDays: z.string().regex(/^\d(,\d)*$/), weekStartsOn: z.number().int().min(0).max(6), defaultBreakMinutes: z.number().int().min(0).max(240), requireAcknowledgement: z.boolean(), includeBreaksInSlack: z.boolean(), includeNotesInSlack: z.boolean() });
+const schema = z.object({ timezone: z.string().min(1), postTime: z.string().regex(/^\d{2}:\d{2}$/), slackChannelId: z.string().trim(), slackMessageHeader: z.string().trim().min(1).max(150), automationEnabled: z.boolean(), maxConsecutiveDays: z.number().int().min(1).max(7), workingDays: z.string().regex(/^\d(,\d)*$/), weekStartsOn: z.number().int().min(0).max(6), defaultBreakMinutes: z.number().int().min(0).max(240), projectStartDate: z.string().nullable().transform(v=>v?new Date(v):null).optional(), scheduleBuildCutoff:z.number().int().min(1).max(31).optional(), splitDate:z.number().int().min(1).max(28).optional(), generationScope:z.enum(["full","split"]).optional(), requireAcknowledgement: z.boolean(), includeBreaksInSlack: z.boolean(), includeNotesInSlack: z.boolean() });
 export async function PATCH(request: Request) {
   const parsed = schema.safeParse(await request.json());
   if (!parsed.success) return NextResponse.json({ error: "Please check the settings." }, { status: 400 });

@@ -216,6 +216,10 @@ model AppSettings {
   workingDays        String  @default("0,1,2,3,4,5,6")
   weekStartsOn       Int     @default(0)
   defaultBreakMinutes Int    @default(60)
+  projectStartDate    DateTime? @db.Date
+  scheduleBuildCutoff Int     @default(20)
+  splitDate           Int     @default(15)
+  generationScope     String  @default("full")
   requireAcknowledgement Boolean @default(true)
   includeBreaksInSlack Boolean @default(true)
   includeNotesInSlack Boolean @default(true)
