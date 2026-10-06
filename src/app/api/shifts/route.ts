@@ -3,6 +3,15 @@ import { z } from "zod";
 import { prisma } from "@/lib/db/prisma";
 
 const schema = z.object({ name: z.string().trim().min(2), startTime: z.string().regex(/^\d{2}:\d{2}$/), endTime: z.string().regex(/^\d{2}:\d{2}$/), minimumStaff: z.number().int().min(0).max(100).default(0), minimumBilingual: z.number().int().min(0).max(100).default(0) }).refine((value)=>value.endTime>value.startTime,{message:"End time must be after start time."});
+
+export async function GET() {
+  const shifts = await prisma.shift.findMany({
+    where: { active: true },
+    orderBy: [{ order: "asc" }, { startTime: "asc" }],
+  });
+  return NextResponse.json(shifts);
+}
+
 export async function POST(request: Request) {
   const parsed = schema.safeParse(await request.json());
   if (!parsed.success) return NextResponse.json({ error: parsed.error.issues[0]?.message ?? "Please check the shift details." }, { status: 400 });

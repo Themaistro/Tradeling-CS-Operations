@@ -11,14 +11,21 @@ type Input = {
   maxWeeklyDays?: number;
   weekStartsOn?: number;
   priorWorkingDates?: Record<string, string[]>;
+  variationSeed?: number;
 };
+
+function variationRank(seed: number, value: string) {
+  let hash = seed | 0;
+  for (let index = 0; index < value.length; index += 1) hash = Math.imul(hash ^ value.charCodeAt(index), 16777619);
+  return hash >>> 0;
+}
 
 function buildConsecutiveOffPlan(input: Input) {
   if ((input.maxWeeklyDays ?? 5) !== 5 || input.operatingDays.length !== 7) return null;
   const required = Array.from({ length: 7 }, (_, day) => input.shifts.reduce((sum, shift) => sum + (shift.minimumByDay[day] ?? 0), 0));
   const capacity = required.map((count) => Math.max(0, input.employees.length - count));
   if (capacity.reduce((sum, count) => sum + count, 0) < input.employees.length * 2) return null;
-  const employees = [...input.employees].sort((left, right) => right.dayOffPreferences.length - left.dayOffPreferences.length || left.name.localeCompare(right.name));
+  const employees = [...input.employees].sort((left, right) => right.dayOffPreferences.length - left.dayOffPreferences.length || variationRank(input.variationSeed ?? 0, left.id) - variationRank(input.variationSeed ?? 0, right.id));
   const plan = new Map<string, Set<number>>();
   const pairScore = (employee: ScheduleEmployee, firstDay: number) => {
     const secondDay = (firstDay + 1) % 7;
@@ -28,7 +35,7 @@ function buildConsecutiveOffPlan(input: Input) {
   const assign = (index: number): boolean => {
     if (index === employees.length) return true;
     const employee = employees[index];
-    const pairs = Array.from({ length: 7 }, (_, day) => day).sort((left, right) => pairScore(employee, right) - pairScore(employee, left));
+    const pairs = Array.from({ length: 7 }, (_, day) => day).sort((left, right) => pairScore(employee, right) - pairScore(employee, left) || variationRank(input.variationSeed ?? 0, `${employee.id}:${left}`) - variationRank(input.variationSeed ?? 0, `${employee.id}:${right}`));
     for (const firstDay of pairs) {
       const secondDay = (firstDay + 1) % 7;
       if (capacity[firstDay] < 1 || capacity[secondDay] < 1) continue;
@@ -108,7 +115,7 @@ export function generateSchedule(input: Input) {
           const bWeeklyShift = weeklyShift.get(b.id);
           const aScore = (a.preferredShiftId === shift.id ? 20 : 0) + (aWeeklyShift === shift.id ? 100 : aWeeklyShift ? -100 : 0) - (aDayOffRank === 1 ? 30 : aDayOffRank === 2 ? 15 : 0) - (workCount.get(a.id) ?? 0) * 2;
           const bScore = (b.preferredShiftId === shift.id ? 20 : 0) + (bWeeklyShift === shift.id ? 100 : bWeeklyShift ? -100 : 0) - (bDayOffRank === 1 ? 30 : bDayOffRank === 2 ? 15 : 0) - (workCount.get(b.id) ?? 0) * 2;
-          return bScore - aScore || a.name.localeCompare(b.name);
+          return bScore - aScore || variationRank(input.variationSeed ?? 0, `${dateKey}:${shift.id}:${a.id}`) - variationRank(input.variationSeed ?? 0, `${dateKey}:${shift.id}:${b.id}`);
         });
       const protectedRest = eligibleCandidates.filter((employee) => consecutiveOffPlan?.get(employee.id)?.has(weekday));
       const candidates = [...eligibleCandidates.filter((employee) => !consecutiveOffPlan?.get(employee.id)?.has(weekday)), ...protectedRest];

@@ -109,6 +109,7 @@ export default function SchedulePage() {
     setLoading(false);
   }
   async function editAssignment(id: string, status: string, shiftId?: string | null, workLocation?: "OFFICE" | "WFH") {
+    setLoading(true);
     const response = await fetch("/api/schedule/assignment", {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
@@ -120,6 +121,7 @@ export default function SchedulePage() {
         : (await response.json()).error,
     );
     await load();
+    setLoading(false);
   }
   const working =
     period?.assignments.filter((a) => a.status === "WORKING") ?? [];
@@ -190,7 +192,7 @@ export default function SchedulePage() {
           ) : (
             <CalendarDays className="h-4 w-4" />
           )}
-          {period?.status === "DRAFT" ? "Regenerate draft" : "Generate schedule"}
+          {period?.status === "DRAFT" ? "Generate new variation" : "Generate schedule"}
         </button>}
         </div>
         <div className="mt-4 flex flex-wrap gap-3 border-t border-slate-100 pt-4">
@@ -312,6 +314,7 @@ export default function SchedulePage() {
                         {a.status === "WORKING" && period.status === "DRAFT" ? (
                           <select
                             aria-label={`Shift for ${a.employee.name}`}
+                            disabled={loading}
                             value={a.shift?.id ?? ""}
                             onChange={(event) => void editAssignment(a.id, "WORKING", event.target.value)}
                             className="mt-1 w-full rounded-md border border-slate-200 bg-white px-2 py-1 text-xs"
@@ -323,6 +326,7 @@ export default function SchedulePage() {
                       {period.status === "DRAFT" ? (
                         <select
                           aria-label={`Status for ${a.employee.name}`}
+                          disabled={loading}
                           value={a.status}
                           onChange={(event) => void editAssignment(a.id, event.target.value, event.target.value === "WORKING" ? shifts[0]?.id : null)}
                           className="h-9 rounded-lg border border-slate-200 bg-white px-2 text-xs font-bold"
