@@ -21,6 +21,7 @@ COPY --from=builder --chown=app:app /app/.next ./.next
 COPY --from=builder --chown=app:app /app/public ./public
 COPY --from=builder --chown=app:app /app/prisma ./prisma
 COPY --from=builder --chown=app:app /app/prisma.config.ts ./prisma.config.ts
+COPY --from=builder --chown=app:app /app/server.js ./server.js
 USER app
 EXPOSE 3000
 CMD ["sh", "-c", "npx prisma db push && npx prisma db seed && npm start"]

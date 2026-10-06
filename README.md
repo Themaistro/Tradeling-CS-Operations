@@ -7,10 +7,15 @@ This is a new application that brings together the strongest parts of the existi
 ## What is included
 
 - One shared team directory for schedules, tasks, leave, and Slack
-- Calendar-based monthly scheduling foundation
-- Staffing and bilingual-coverage rules
-- Daily task and break data model
-- Slack posting and acknowledgement data model
+- Calendar-based monthly schedule generation and approval
+- Preferred shifts, preferred days off, PTO, sick leave, and bilingual coverage
+- Per-day staffing rules for headcount, calls, chats, tickets, and bilingual coverage
+- Manual schedule corrections with protected published history
+- Daily task assignments, notes, flexible breaks, and eligibility enforcement
+- Manual and scheduled Slack posting
+- Slack acknowledgement recording through Socket Mode
+- Live readiness, coverage, task, and Slack reporting
+- Portable JSON backups
 - Single-administrator sign-in
 - PostgreSQL persistence
 - Docker setup for local testing and deployment
@@ -47,6 +52,8 @@ Create a Slack app with Socket Mode enabled and provide these values through the
 
 - `SLACK_BOT_TOKEN` (`xoxb-...`)
 - `SLACK_APP_TOKEN` (`xapp-...`)
+
+The bot needs `chat:write`, `channels:read`, `groups:read`, and `im:write`. Enable Interactivity and Socket Mode so acknowledgement buttons can be received. After changing scopes, reinstall the app to the workspace.
 
 Never commit real tokens. If a token has been shared in chat or source control, revoke it in Slack and issue a replacement.
 

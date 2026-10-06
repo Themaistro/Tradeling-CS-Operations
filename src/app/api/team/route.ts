@@ -5,7 +5,7 @@ import { prisma } from "@/lib/db/prisma";
 const employeeSchema = z.object({ name: z.string().trim().min(2).max(80), slackId: z.string().trim().max(30).optional(), isBilingual: z.boolean().default(false) });
 
 export async function GET() {
-  const employees = await prisma.employee.findMany({ where: { status: "ACTIVE" }, orderBy: { name: "asc" } });
+  const employees = await prisma.employee.findMany({ where: { status: "ACTIVE" }, include: { preferredShift: true, dayOffPreferences: true, timeOff: { orderBy: { date: "asc" } } }, orderBy: { name: "asc" } });
   return NextResponse.json(employees);
 }
 

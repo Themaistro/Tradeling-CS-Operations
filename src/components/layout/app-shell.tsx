@@ -2,7 +2,16 @@
 
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
-import { BarChart3, CalendarDays, ClipboardList, LogOut, Settings, Sparkles, Users } from "lucide-react";
+import {
+  BarChart3,
+  CalendarDays,
+  ClipboardList,
+  LogOut,
+  Send,
+  Settings,
+  Sparkles,
+  Users,
+} from "lucide-react";
 
 const navigation = [
   { href: "/overview", label: "Overview", icon: BarChart3 },
@@ -22,6 +31,26 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     router.refresh();
   }
 
+  async function postTodayToSlack() {
+    const date = new Intl.DateTimeFormat("en-CA", {
+      timeZone: "Asia/Dubai",
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+    }).format(new Date());
+    const response = await fetch("/api/slack/post", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ date }),
+    });
+    const result = await response.json();
+    alert(
+      response.ok
+        ? "Today’s roster was posted to Slack."
+        : result.error || "Slack posting failed.",
+    );
+  }
+
   return (
     <div className="min-h-screen bg-[#f4f6fb] text-slate-950">
       <aside className="fixed inset-y-0 left-0 z-30 hidden w-72 border-r border-slate-200/80 bg-[#111827] text-white lg:flex lg:flex-col">
@@ -30,15 +59,23 @@ export function AppShell({ children }: { children: React.ReactNode }) {
             <Sparkles className="h-5 w-5" />
           </div>
           <p className="text-lg font-bold tracking-tight">CS Operations</p>
-          <p className="mt-1 text-xs text-slate-400">Scheduling and daily workflow</p>
+          <p className="mt-1 text-xs text-slate-400">
+            Scheduling and daily workflow
+          </p>
         </div>
 
         <nav className="flex-1 space-y-1.5 px-4 py-6">
           {navigation.map(({ href, label, icon: Icon }) => {
             const active = pathname === href || pathname.startsWith(`${href}/`);
             return (
-              <Link key={href} href={href} className={`flex items-center gap-3 rounded-xl px-4 py-3 text-sm font-semibold transition ${active ? "bg-white text-slate-950 shadow-sm" : "text-slate-400 hover:bg-white/5 hover:text-white"}`}>
-                <Icon className={`h-4.5 w-4.5 ${active ? "text-orange-500" : ""}`} />
+              <Link
+                key={href}
+                href={href}
+                className={`flex items-center gap-3 rounded-xl px-4 py-3 text-sm font-semibold transition ${active ? "bg-white text-slate-950 shadow-sm" : "text-slate-400 hover:bg-white/5 hover:text-white"}`}
+              >
+                <Icon
+                  className={`h-4.5 w-4.5 ${active ? "text-orange-500" : ""}`}
+                />
                 {label}
               </Link>
             );
@@ -46,7 +83,10 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         </nav>
 
         <div className="border-t border-white/10 p-4">
-          <button onClick={signOut} className="flex w-full items-center gap-3 rounded-xl px-4 py-3 text-sm font-semibold text-slate-400 transition hover:bg-white/5 hover:text-white">
+          <button
+            onClick={signOut}
+            className="flex w-full items-center gap-3 rounded-xl px-4 py-3 text-sm font-semibold text-slate-400 transition hover:bg-white/5 hover:text-white"
+          >
             <LogOut className="h-4 w-4" /> Sign out
           </button>
         </div>
@@ -55,12 +95,28 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       <div className="lg:pl-72">
         <header className="sticky top-0 z-20 flex h-18 items-center justify-between border-b border-slate-200/80 bg-white/90 px-5 backdrop-blur-xl md:px-8">
           <div>
-            <p className="text-xs font-semibold uppercase tracking-[0.18em] text-orange-500">Tradeling</p>
-            <p className="text-sm font-semibold text-slate-700">Customer Service Operations</p>
+            <p className="text-xs font-semibold uppercase tracking-[0.18em] text-orange-500">
+              Tradeling
+            </p>
+            <p className="text-sm font-semibold text-slate-700">
+              Customer Service Operations
+            </p>
           </div>
-          <div className="flex items-center gap-3 rounded-full border border-slate-200 bg-slate-50 px-3 py-2">
-            <span className="h-2 w-2 rounded-full bg-emerald-500" />
-            <span className="text-xs font-semibold text-slate-600">System ready</span>
+          <div className="flex items-center gap-3">
+            {pathname === "/tasks" && (
+              <button
+                onClick={postTodayToSlack}
+                className="flex items-center gap-2 rounded-xl bg-orange-500 px-4 py-2 text-xs font-bold text-white"
+              >
+                <Send className="h-3.5 w-3.5" /> Post today to Slack
+              </button>
+            )}
+            <div className="flex items-center gap-3 rounded-full border border-slate-200 bg-slate-50 px-3 py-2">
+              <span className="h-2 w-2 rounded-full bg-emerald-500" />
+              <span className="text-xs font-semibold text-slate-600">
+                System ready
+              </span>
+            </div>
           </div>
         </header>
         <main className="px-5 py-7 md:px-8 md:py-9">{children}</main>
