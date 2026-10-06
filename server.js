@@ -46,11 +46,11 @@ app.prepare().then(async () => {
         Fri: 5,
         Sat: 6,
       }[weekday];
-      if (
-        time !== settings.postTime ||
-        !settings.workingDays.split(",").includes(String(dayNumber))
-      )
-        return;
+      if (time !== settings.postTime) return;
+      const activeOperatingWindow = await prisma.accountOperatingWindow.findFirst({
+        where: { dayOfWeek: dayNumber, account: { active: true } },
+      });
+      if (!activeOperatingWindow) return;
       const date = new Intl.DateTimeFormat("en-CA", {
         timeZone: settings.timezone,
         year: "numeric",

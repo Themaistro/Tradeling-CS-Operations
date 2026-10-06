@@ -7,7 +7,7 @@ type Input = {
   employees: ScheduleEmployee[];
   shifts: ScheduleShift[];
   maxConsecutiveDays: number;
-  workingDays: number[];
+  operatingDays: number[];
   maxWeeklyDays?: number;
   weekStartsOn?: number;
   priorWorkingDates?: Record<string, string[]>;
@@ -56,7 +56,7 @@ export function generateSchedule(input: Input) {
       currentWeek = weekKey;
     }
     const leaves = new Map(input.employees.map((employee) => [employee.id, employee.timeOff.find((entry) => entry.date === dateKey)]));
-    const isOperatingDay = input.workingDays.includes(weekday);
+    const isOperatingDay = input.operatingDays.includes(weekday);
     const available = input.employees.filter((employee) => !leaves.get(employee.id));
     const assigned = new Set<string>();
 

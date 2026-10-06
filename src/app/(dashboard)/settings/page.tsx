@@ -23,9 +23,7 @@ type Settings = {
   slackMessageHeader: string;
   automationEnabled: boolean;
   maxConsecutiveDays: number;
-  workingDays: string;
   weekStartsOn: number;
-  defaultBreakMinutes: number;
   mainBreakMinutes: number;
   shortBreakMinutes: number;
   breakGapMinutes: number;
@@ -40,19 +38,10 @@ type Shift = {
   name: string;
   startTime: string;
   endTime: string;
-  staffingRules: {
-    dayOfWeek: number;
-    minimumStaff: number;
-    minimumBilingual: number;
-    calls: number;
-    chats: number;
-    tickets: number;
-  }[];
 };
 type Data = {
   settings: Settings;
   shifts: Shift[];
-  taskCategories: { id: string; name: string; icon: string }[];
   slackConfigured: boolean;
 };
 type Tab = "general" | "shifts" | "tasks" | "slack" | "data";
@@ -69,7 +58,6 @@ export default function SettingsPage() {
     text: string;
   } | null>(null);
   const [saving, setSaving] = useState(false);
-  const [coverageDay, setCoverageDay] = useState(0);
 
   async function load() {
     const response = await fetch("/api/settings");
@@ -118,8 +106,6 @@ export default function SettingsPage() {
         name: values.get("name"),
         startTime: values.get("start"),
         endTime: values.get("end"),
-        minimumStaff: Number(values.get("staff")),
-        minimumBilingual: Number(values.get("bilingual")),
       }),
     });
     setNotice({
@@ -157,72 +143,6 @@ export default function SettingsPage() {
     setSaving(false);
   }
 
-  async function addCategory(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    setSaving(true);
-    setNotice(null);
-    const form = event.currentTarget;
-    const values = new FormData(form);
-    const response = await fetch("/api/task-categories", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        name: values.get("name"),
-        icon: values.get("icon") || "📌",
-      }),
-    });
-    setNotice({
-      kind: response.ok ? "success" : "error",
-      text: response.ok
-        ? "Task category added."
-        : (await response.json()).error,
-    });
-    if (response.ok) {
-      form.reset();
-      await load();
-    }
-    setSaving(false);
-  }
-
-  async function removeCategory(id: string) {
-    if (!confirm("Remove this task category? Existing task history will be preserved.")) return;
-    const response = await fetch("/api/task-categories", {
-      method: "DELETE",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ id }),
-    });
-    const body = await response.json();
-    setNotice({ kind: response.ok ? "success" : "error", text: response.ok ? (body.archived ? "Category archived. Existing history was preserved." : "Category removed.") : body.error });
-    if (response.ok) await load();
-  }
-
-  async function saveCoverage(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    setSaving(true);
-    const values = new FormData(event.currentTarget);
-    const rules = data!.shifts.map((shift) => ({
-      shiftId: shift.id,
-      minimumStaff: Number(values.get(`${shift.id}-staff`)),
-      minimumBilingual: Number(values.get(`${shift.id}-bilingual`)),
-      calls: Number(values.get(`${shift.id}-calls`)),
-      chats: Number(values.get(`${shift.id}-chats`)),
-      tickets: Number(values.get(`${shift.id}-tickets`)),
-    }));
-    const response = await fetch("/api/staffing-rules", {
-      method: "PATCH",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ dayOfWeek: coverageDay, rules }),
-    });
-    setNotice({
-      kind: response.ok ? "success" : "error",
-      text: response.ok
-        ? "Daily staffing rules saved."
-        : "Could not save staffing rules.",
-    });
-    if (response.ok) await load();
-    setSaving(false);
-  }
-
   if (!data || !settings)
     return (
       <div className="flex min-h-64 items-center justify-center">
@@ -239,14 +159,14 @@ export default function SettingsPage() {
     },
     {
       id: "shifts" as const,
-      label: "Shifts & coverage",
+      label: "Shifts",
       helper: `${data.shifts.length} configured`,
       icon: Users,
     },
     {
       id: "tasks" as const,
-      label: "Tasks & breaks",
-      helper: `${data.taskCategories.length} categories`,
+      label: "Breaks",
+      helper: `${settings.mainBreakMinutes + settings.shortBreakMinutes} minutes`,
       icon: ClipboardList,
     },
     {
@@ -268,7 +188,7 @@ export default function SettingsPage() {
       <PageHeading
         eyebrow="Configuration"
         title="Settings"
-        description="Manage your operating rules, team coverage, and Slack delivery from one place."
+        description="Manage application preferences, shift definitions, breaks, Slack delivery, and security. Account rules are managed in Operations."
       />
       <div className="mb-6 grid gap-4 sm:grid-cols-3">
         <StatusCard
@@ -396,43 +316,9 @@ export default function SettingsPage() {
                     />
                   </Label>
                 </div>
-                <div>
-                  <p className="text-sm font-bold text-slate-700">
-                    Active operating days
-                  </p>
-                  <p className="mt-1 text-xs text-slate-500">
-                    Only selected days appear in daily operations and automatic
-                    posting.
-                  </p>
-                  <div className="mt-3 grid grid-cols-4 gap-2 sm:grid-cols-7">
-                    {["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"].map(
-                      (d, i) => {
-                        const active = settings.workingDays
-                          .split(",")
-                          .includes(String(i));
-                        return (
-                          <button
-                            key={d}
-                            onClick={() => {
-                              const values = settings.workingDays
-                                .split(",")
-                                .filter(Boolean);
-                              const next = active
-                                ? values.filter((v) => v !== String(i))
-                                : [...values, String(i)].sort();
-                              setSettings({
-                                ...settings,
-                                workingDays: next.join(","),
-                              });
-                            }}
-                            className={`rounded-xl border px-3 py-3 text-sm font-bold ${active ? "border-orange-500 bg-orange-50 text-orange-700" : "border-slate-200 text-slate-400"}`}
-                          >
-                            {d}
-                          </button>
-                        );
-                      },
-                    )}
-                  </div>
+                <div className="rounded-xl border border-blue-100 bg-blue-50 p-5 text-sm text-blue-800">
+                  <b>Operating days and service hours are managed in Operations.</b>
+                  <p className="mt-1 text-blue-700">The schedule automatically follows the active account hours configured there.</p>
                 </div>
                 <div className="rounded-xl bg-slate-950 p-5 text-sm text-slate-300">
                   <b className="text-white">Schedule protection:</b> rule
@@ -448,8 +334,8 @@ export default function SettingsPage() {
             <div>
               <SectionHeader
                 icon={Clock3}
-                title="Shifts and coverage"
-                description="Create the working periods and minimum staffing levels used by the schedule generator."
+                title="Shift definitions"
+                description="Create the working periods agents can be assigned to. Staffing targets are managed in Operations."
               />
               <div className="p-6">
                 <div className="space-y-3">
@@ -482,94 +368,13 @@ export default function SettingsPage() {
                     </p>
                   )}
                 </div>
-                {data.shifts.length > 0 && (
-                  <form
-                    onSubmit={saveCoverage}
-                    className="mt-7 rounded-2xl border border-slate-200 p-5"
-                  >
-                    <h3 className="font-bold text-slate-900">
-                      Daily staffing rules
-                    </h3>
-                    <p className="mt-1 text-sm text-slate-500">
-                      Set staffing and task coverage separately for each
-                      weekday.
-                    </p>
-                    <div className="mt-4 flex flex-wrap gap-2">
-                      {["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"].map(
-                        (day, index) => (
-                          <button
-                            type="button"
-                            key={day}
-                            onClick={() => setCoverageDay(index)}
-                            className={`rounded-lg px-4 py-2 text-xs font-bold ${coverageDay === index ? "bg-orange-500 text-white" : "bg-slate-100 text-slate-600"}`}
-                          >
-                            {day}
-                          </button>
-                        ),
-                      )}
-                    </div>
-                    <div className="mt-5 space-y-4">
-                      {data.shifts.map((shift) => {
-                        const rule = shift.staffingRules.find(
-                          (item) => item.dayOfWeek === coverageDay,
-                        );
-                        return (
-                          <div
-                            key={`${shift.id}-${coverageDay}`}
-                            className="rounded-xl bg-slate-50 p-4"
-                          >
-                            <p className="font-bold">{shift.name}</p>
-                            <div className="mt-3 grid grid-cols-2 gap-3 md:grid-cols-5">
-                              {[
-                                [
-                                  "staff",
-                                  "Minimum staff",
-                                  rule?.minimumStaff ?? 0,
-                                ],
-                                [
-                                  "bilingual",
-                                  "Bilingual",
-                                  rule?.minimumBilingual ?? 0,
-                                ],
-                                ["calls", "Calls", rule?.calls ?? 0],
-                                ["chats", "Chats", rule?.chats ?? 0],
-                                ["tickets", "Tickets", rule?.tickets ?? 0],
-                              ].map(([key, label, value]) => (
-                                <label
-                                  key={String(key)}
-                                  className="text-xs font-bold text-slate-500"
-                                >
-                                  {label}
-                                  <input
-                                    name={`${shift.id}-${key}`}
-                                    type="number"
-                                    min="0"
-                                    defaultValue={value}
-                                    className="mt-1 w-full rounded-lg border border-slate-200 px-3 py-2 text-slate-900"
-                                  />
-                                </label>
-                              ))}
-                            </div>
-                          </div>
-                        );
-                      })}
-                    </div>
-                    <button
-                      disabled={saving}
-                      className="mt-4 rounded-xl bg-orange-500 px-5 py-3 text-sm font-bold text-white"
-                    >
-                      Save coverage rules
-                    </button>
-                  </form>
-                )}
                 <form
                   onSubmit={addShift}
                   className="mt-7 rounded-2xl border border-slate-200 bg-slate-50 p-5"
                 >
                   <h3 className="font-bold text-slate-900">Add a shift</h3>
                   <p className="mt-1 text-sm text-slate-500">
-                    Coverage requirements will initially apply to every day of
-                    the week.
+                    After adding a shift, set its daily team capacity in Operations.
                   </p>
                   <div className="mt-4 grid gap-4 sm:grid-cols-2">
                     <Label title="Shift name">
@@ -577,16 +382,6 @@ export default function SettingsPage() {
                         required
                         name="name"
                         placeholder="e.g. Morning"
-                        className={field}
-                      />
-                    </Label>
-                    <Label title="Minimum staff">
-                      <input
-                        required
-                        name="staff"
-                        type="number"
-                        min="0"
-                        defaultValue="1"
                         className={field}
                       />
                     </Label>
@@ -603,16 +398,6 @@ export default function SettingsPage() {
                         required
                         name="end"
                         type="time"
-                        className={field}
-                      />
-                    </Label>
-                    <Label title="Minimum bilingual staff">
-                      <input
-                        required
-                        name="bilingual"
-                        type="number"
-                        min="0"
-                        defaultValue="0"
                         className={field}
                       />
                     </Label>
@@ -633,55 +418,11 @@ export default function SettingsPage() {
             <div>
               <SectionHeader
                 icon={ClipboardList}
-                title="Tasks and breaks"
-                description="Control the task choices and default break settings used by daily operations."
+                title="Break policy"
+                description="Control break entitlement and coverage timing. Account workstreams are managed in Operations."
               />
-              <div className="grid gap-6 p-6 lg:grid-cols-[1.2fr_0.8fr]">
-                <div>
-                  <p className="text-sm font-bold text-slate-700">
-                    Task categories
-                  </p>
-                  <div className="mt-3 grid gap-3 sm:grid-cols-2">
-                    {data.taskCategories.map((c) => (
-                      <div
-                        key={c.id}
-                        className="flex items-center gap-3 rounded-xl border border-slate-200 p-4"
-                      >
-                        <span className="text-xl">{c.icon}</span>
-                        <b className="min-w-0 flex-1 truncate text-sm">{c.name}</b>
-                        <button
-                          type="button"
-                          aria-label={`Remove ${c.name}`}
-                          onClick={() => void removeCategory(c.id)}
-                          className="rounded-lg p-2 text-slate-400 hover:bg-red-50 hover:text-red-600"
-                        >
-                          <Trash2 className="h-4 w-4" />
-                        </button>
-                      </div>
-                    ))}
-                  </div>
-                  <form
-                    onSubmit={addCategory}
-                    className="mt-4 flex gap-3 rounded-xl bg-slate-50 p-4"
-                  >
-                    <input
-                      name="icon"
-                      maxLength={8}
-                      placeholder="📌"
-                      className="w-16 rounded-xl border border-slate-200 px-3 text-center"
-                    />
-                    <input
-                      required
-                      name="name"
-                      placeholder="New task category"
-                      className="min-w-0 flex-1 rounded-xl border border-slate-200 px-4"
-                    />
-                    <button className="rounded-xl bg-slate-950 px-4 font-bold text-white">
-                      <Plus className="h-4 w-4" />
-                    </button>
-                  </form>
-                </div>
-                <div>
+              <div className="p-6">
+                <div className="max-w-3xl">
                   <p className="text-sm font-bold text-slate-700">Break entitlement and coverage</p>
                   <p className="mt-1 text-xs text-slate-500">Breaks are staggered automatically and require another active agent to cover live calls and chats.</p>
                   <div className="mt-4 grid gap-4 sm:grid-cols-2">
@@ -692,7 +433,7 @@ export default function SettingsPage() {
                       ["Main break after shift start", "mainBreakAfterMinutes", settings.mainBreakAfterMinutes],
                       ["Short break after main break", "shortBreakDelayMinutes", settings.shortBreakDelayMinutes],
                     ].map(([label, key, value]) => (
-                      <label key={String(key)} className="text-xs font-bold text-slate-600">{label}<div className="relative"><input type="number" min="0" max="600" value={Number(value)} onChange={(event)=>{const next=Number(event.target.value);setSettings({...settings,[String(key)]:next,defaultBreakMinutes:key==="mainBreakMinutes"?next+settings.shortBreakMinutes:key==="shortBreakMinutes"?settings.mainBreakMinutes+next:settings.defaultBreakMinutes})}} className={field}/><span className="absolute bottom-3 right-4 text-xs text-slate-400">minutes</span></div></label>
+                      <label key={String(key)} className="text-xs font-bold text-slate-600">{label}<div className="relative"><input type="number" min="0" max="600" value={Number(value)} onChange={(event)=>setSettings({...settings,[String(key)]:Number(event.target.value)})} className={field}/><span className="absolute bottom-3 right-4 text-xs text-slate-400">minutes</span></div></label>
                     ))}
                   </div>
                   <div className="mt-4 rounded-xl bg-emerald-50 p-4 text-sm text-emerald-800"><b>Total entitlement:</b> {settings.mainBreakMinutes + settings.shortBreakMinutes} minutes per working agent.</div>

@@ -15,11 +15,12 @@ const actions = z.discriminatedUnion("action", [
 ]);
 
 export async function GET() {
-  const [accounts, employees] = await Promise.all([
+  const [accounts, employees, shifts] = await Promise.all([
     prisma.account.findMany({ include: { operatingWindows: { orderBy: [{ dayOfWeek: "asc" }, { startTime: "asc" }] }, coverageRequirements: { orderBy: [{ dayOfWeek: "asc" }, { startTime: "asc" }] }, taskCategories: { where: { active: true }, orderBy: { order: "asc" } }, employeeCapabilities: true }, orderBy: { name: "asc" } }),
     prisma.employee.findMany({ where: { status: "ACTIVE" }, select: { id: true, name: true, accountCapabilities: true }, orderBy: { name: "asc" } }),
+    prisma.shift.findMany({ where: { active: true }, include: { staffingRules: true }, orderBy: { order: "asc" } }),
   ]);
-  return NextResponse.json({ accounts, employees });
+  return NextResponse.json({ accounts, employees, shifts });
 }
 
 export async function POST(request: Request) {
@@ -34,10 +35,18 @@ export async function POST(request: Request) {
       const { action: _, ...window } = data; void _;
       return NextResponse.json(await prisma.accountOperatingWindow.create({ data: window }), { status: 201 });
     }
-    if (data.action === "removeWindow") { await prisma.accountOperatingWindow.delete({ where: { id: data.id } }); return NextResponse.json({ ok: true }); }
+    if (data.action === "removeWindow") {
+      const window = await prisma.accountOperatingWindow.findUnique({ where: { id: data.id } });
+      if (!window) return NextResponse.json({ error: "Operating window not found." }, { status: 404 });
+      const dependentCoverage = await prisma.coverageRequirement.count({ where: { accountId: window.accountId, dayOfWeek: window.dayOfWeek, startTime: { gte: window.startTime }, endTime: { lte: window.endTime } } });
+      if (dependentCoverage) return NextResponse.json({ error: "Remove the coverage windows inside these operating hours first." }, { status: 409 });
+      await prisma.accountOperatingWindow.delete({ where: { id: data.id } }); return NextResponse.json({ ok: true });
+    }
     if (data.action === "upsertCoverage") {
       if (data.endTime <= data.startTime) return NextResponse.json({ error: "Coverage end time must be after its start time." }, { status: 400 });
       if (data.minimumBilingual > data.minimumStaff) return NextResponse.json({ error: "Bilingual coverage cannot exceed total staffing." }, { status: 400 });
+      const containingWindow = await prisma.accountOperatingWindow.findFirst({ where: { accountId: data.accountId, dayOfWeek: data.dayOfWeek, startTime: { lte: data.startTime }, endTime: { gte: data.endTime } } });
+      if (!containingWindow) return NextResponse.json({ error: "Coverage must be inside the account's operating hours for that day." }, { status: 409 });
       const { action: _, ...rule } = data; void _;
       return NextResponse.json(await prisma.coverageRequirement.upsert({ where: { accountId_dayOfWeek_startTime_endTime: { accountId: data.accountId, dayOfWeek: data.dayOfWeek, startTime: data.startTime, endTime: data.endTime } }, create: rule, update: { minimumStaff: data.minimumStaff, minimumBilingual: data.minimumBilingual } }));
     }

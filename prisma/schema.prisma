@@ -86,9 +86,6 @@ model StaffingRule {
   shift            Shift  @relation(fields: [shiftId], references: [id], onDelete: Cascade)
   minimumStaff     Int    @default(0)
   minimumBilingual Int    @default(0)
-  calls            Int    @default(0)
-  chats            Int    @default(0)
-  tickets          Int    @default(0)
 
   @@unique([dayOfWeek, shiftId])
 }
@@ -273,9 +270,7 @@ model AppSettings {
   automationEnabled      Boolean   @default(false)
   slackChannelId         String    @default("")
   slackMessageHeader     String    @default("Customer Service Daily Schedule")
-  workingDays            String    @default("0,1,2,3,4,5,6")
   weekStartsOn           Int       @default(0)
-  defaultBreakMinutes    Int       @default(60)
   mainBreakMinutes       Int       @default(40)
   shortBreakMinutes      Int       @default(20)
   breakGapMinutes        Int       @default(10)

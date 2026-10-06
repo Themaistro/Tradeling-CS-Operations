@@ -19,13 +19,14 @@ export default async function OverviewPage() {
   }).format(new Date());
   const date = new Date(`${dateKey}T00:00:00.000Z`);
   const weekday = new Date(`${dateKey}T12:00:00.000Z`).getDay();
-  const [working, tasks, settings, rules, lastPost] = await Promise.all([
-    prisma.shiftAssignment.count({
+  const [workingAssignments, tasks, settings, accounts, lastPost] = await Promise.all([
+    prisma.shiftAssignment.findMany({
       where: {
         date,
         status: "WORKING",
         schedulePeriod: { status: { in: ["APPROVED", "PUBLISHED"] } },
       },
+      include: { shift: true },
     }),
     prisma.taskAssignment.count({ where: { date } }),
     prisma.appSettings.upsert({
@@ -33,18 +34,21 @@ export default async function OverviewPage() {
       create: { id: "global" },
       update: {},
     }),
-    prisma.staffingRule.aggregate({
-      where: { dayOfWeek: weekday },
-      _sum: { minimumStaff: true },
-    }),
+    prisma.account.findMany({ where: { active: true }, include: { coverageRequirements: { where: { dayOfWeek: weekday } }, employeeCapabilities: true } }),
     prisma.slackPostLog.findFirst({
       where: { scheduleDate: date },
       orderBy: { createdAt: "desc" },
     }),
   ]);
-  const required = rules._sum.minimumStaff || 0;
-  const coverage = required
-    ? Math.min(100, Math.round((working / required) * 100))
+  const working = workingAssignments.length;
+  const coverageChecks = accounts.flatMap((account) => account.coverageRequirements.map((requirement) => {
+    const capable = new Set(account.employeeCapabilities.map((item) => item.employeeId));
+    const staffed = workingAssignments.filter((assignment) => assignment.shift && capable.has(assignment.employeeId) && assignment.shift.startTime <= requirement.startTime && assignment.shift.endTime >= requirement.endTime).length;
+    return { required: requirement.minimumStaff, staffed };
+  }));
+  const required = Math.max(0, ...coverageChecks.map((item) => item.required));
+  const coverage = coverageChecks.length
+    ? Math.min(...coverageChecks.map((item) => item.required ? Math.min(100, Math.round((item.staffed / item.required) * 100)) : 100))
     : working
       ? 100
       : 0;
@@ -59,7 +63,7 @@ export default async function OverviewPage() {
     {
       label: "Coverage",
       value: `${coverage}%`,
-      helper: `${working} of ${required || "—"} required`,
+      helper: coverageChecks.length ? `Lowest account window · up to ${required} required` : "No coverage windows today",
       icon: Activity,
       color:
         coverage >= 100
