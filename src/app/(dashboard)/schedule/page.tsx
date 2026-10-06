@@ -50,18 +50,28 @@ export default function SchedulePage() {
     await load();
     setLoading(false);
   }
-  async function approve() {
+  async function approve(overrideCoverage = false) {
     setLoading(true);
     const r = await fetch("/api/schedule", {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ year, month, status: "APPROVED" }),
+      body: JSON.stringify({ year, month, status: "APPROVED", overrideCoverage }),
     });
-    setMessage(
-      r.ok
-        ? "Schedule approved. The roster is now available in Daily Tasks."
-        : "Could not approve the schedule.",
-    );
+    const body = await r.json();
+    if (!r.ok && body.code === "COVERAGE_BLOCKED") {
+      setLoading(false);
+      if (confirm(`${body.shortages.length} coverage issue(s) remain. Approve with an explicit coverage exception?`)) await approve(true);
+      return;
+    }
+    setMessage(r.ok ? "Schedule approved. The roster is now available in Daily Tasks." : body.error ?? "Could not approve the schedule.");
+    await load();
+    setLoading(false);
+  }
+  async function publish() {
+    setLoading(true);
+    const response = await fetch("/api/schedule", { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ year, month, status: "PUBLISHED" }) });
+    const body = await response.json();
+    setMessage(response.ok ? "Schedule published and locked. It can no longer be edited or regenerated." : body.error ?? "Could not publish the schedule.");
     await load();
     setLoading(false);
   }
@@ -139,7 +149,7 @@ export default function SchedulePage() {
         {period?.status === "DRAFT" && (
           <button
             disabled={loading}
-            onClick={approve}
+            onClick={() => void approve()}
             className="flex items-center gap-2 rounded-xl bg-emerald-600 px-5 py-3 font-bold text-white"
           >
             <CheckCircle2 className="h-4 w-4" />
@@ -147,14 +157,10 @@ export default function SchedulePage() {
           </button>
         )}
         {period?.status === "APPROVED" && (
-          <button
-            disabled={loading}
-            onClick={reopen}
-            className="flex items-center gap-2 rounded-xl border border-amber-300 bg-amber-50 px-5 py-3 font-bold text-amber-800"
-          >
-            <LockOpen className="h-4 w-4" />
-            Reopen for changes
-          </button>
+          <>
+            <button disabled={loading} onClick={reopen} className="flex items-center gap-2 rounded-xl border border-amber-300 bg-amber-50 px-5 py-3 font-bold text-amber-800"><LockOpen className="h-4 w-4" />Reopen for changes</button>
+            <button disabled={loading} onClick={publish} className="flex items-center gap-2 rounded-xl bg-slate-950 px-5 py-3 font-bold text-white"><CheckCircle2 className="h-4 w-4" />Publish and lock</button>
+          </>
         )}
       </div>
       {message && (
@@ -209,7 +215,7 @@ export default function SchedulePage() {
                     >
                       <div className="min-w-0">
                         <b className="block truncate">{a.employee.name}</b>
-                        {a.status === "WORKING" && period.status !== "PUBLISHED" ? (
+                        {a.status === "WORKING" && period.status === "DRAFT" ? (
                           <select
                             aria-label={`Shift for ${a.employee.name}`}
                             value={a.shift?.id ?? ""}
@@ -220,7 +226,7 @@ export default function SchedulePage() {
                           </select>
                         ) : <span className="text-xs text-slate-500">{a.shift?.name ?? a.status}</span>}
                       </div>
-                      {period.status !== "PUBLISHED" ? (
+                      {period.status === "DRAFT" ? (
                         <select
                           aria-label={`Status for ${a.employee.name}`}
                           value={a.status}

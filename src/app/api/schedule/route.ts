@@ -55,8 +55,34 @@ export async function POST(request: Request) {
 }
 
 export async function PATCH(request: Request) {
-  const { year, month, status } = await request.json();
+  const { year, month, status, overrideCoverage = false } = await request.json();
   if (!["DRAFT", "APPROVED", "PUBLISHED"].includes(status)) return NextResponse.json({ error: "Invalid schedule status." }, { status: 400 });
-  const period = await prisma.schedulePeriod.update({ where: { year_month: { year: Number(year), month: Number(month) } }, data: { status, approvedAt: status === "APPROVED" ? new Date() : undefined } });
+  const key = { year: Number(year), month: Number(month) };
+  if (!Number.isInteger(key.year) || !Number.isInteger(key.month) || key.month < 1 || key.month > 12) return NextResponse.json({ error: "Invalid month." }, { status: 400 });
+  const current = await prisma.schedulePeriod.findUnique({ where: { year_month: key }, include: { assignments: { include: { employee: true } } } });
+  if (!current) return NextResponse.json({ error: "Generate the schedule before changing its status." }, { status: 404 });
+  const transitions: Record<string, string[]> = { DRAFT: ["APPROVED"], APPROVED: ["DRAFT", "PUBLISHED"], PUBLISHED: [] };
+  if (status !== current.status && !transitions[current.status]?.includes(status)) return NextResponse.json({ error: `A ${current.status.toLowerCase()} schedule cannot move directly to ${status.toLowerCase()}.` }, { status: 409 });
+  if (status === "APPROVED" && !overrideCoverage) {
+    const [rules, settings] = await Promise.all([
+      prisma.staffingRule.findMany({ where: { shift: { active: true } }, include: { shift: true } }),
+      prisma.appSettings.upsert({ where: { id: "global" }, create: { id: "global" }, update: {} }),
+    ]);
+    const operatingDays = new Set(settings.workingDays.split(",").map(Number));
+    const shortages: string[] = [];
+    const dates = [...new Set(current.assignments.map((assignment) => assignment.date.toISOString().slice(0, 10)))];
+    for (const date of dates) {
+      const weekday = new Date(`${date}T00:00:00.000Z`).getUTCDay();
+      if (!operatingDays.has(weekday)) continue;
+      for (const rule of rules.filter((item) => item.dayOfWeek === weekday)) {
+        const staffed = current.assignments.filter((assignment) => assignment.date.toISOString().slice(0, 10) === date && assignment.status === "WORKING" && assignment.shiftId === rule.shiftId);
+        if (staffed.length < rule.minimumStaff) shortages.push(`${date}: ${rule.shift.name} is short by ${rule.minimumStaff - staffed.length}.`);
+        const bilingual = staffed.filter((assignment) => assignment.employee.isBilingual).length;
+        if (bilingual < rule.minimumBilingual) shortages.push(`${date}: ${rule.shift.name} is short by ${rule.minimumBilingual - bilingual} bilingual team member(s).`);
+      }
+    }
+    if (shortages.length) return NextResponse.json({ error: "Coverage requirements are not met.", code: "COVERAGE_BLOCKED", shortages }, { status: 409 });
+  }
+  const period = await prisma.schedulePeriod.update({ where: { year_month: key }, data: { status, approvedAt: status === "APPROVED" ? new Date() : status === "DRAFT" ? null : undefined } });
   return NextResponse.json(period);
 }
