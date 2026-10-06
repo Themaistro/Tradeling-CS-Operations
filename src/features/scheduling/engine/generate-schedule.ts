@@ -26,6 +26,7 @@ export function generateSchedule(input: Input) {
   const workCount = new Map<string, number>();
   const consecutive = new Map<string, number>();
   const weeklyCount = new Map<string, number>();
+  const weeklyShift = new Map<string, string>();
   const weekStartsOn = input.weekStartsOn ?? 0;
   const weekKeyFor = (date: Date) => {
     const start = new Date(date);
@@ -53,6 +54,7 @@ export function generateSchedule(input: Input) {
     const weekKey = weekKeyFor(date);
     if (weekKey !== currentWeek) {
       weeklyCount.clear();
+      weeklyShift.clear();
       currentWeek = weekKey;
     }
     const leaves = new Map(input.employees.map((employee) => [employee.id, employee.timeOff.find((entry) => entry.date === dateKey)]));
@@ -69,14 +71,17 @@ export function generateSchedule(input: Input) {
         .sort((a, b) => {
           const aDayOffRank = a.dayOffPreferences.find((item) => item.dayOfWeek === weekday)?.rank ?? 99;
           const bDayOffRank = b.dayOffPreferences.find((item) => item.dayOfWeek === weekday)?.rank ?? 99;
-          const aScore = (a.preferredShiftId === shift.id ? 20 : 0) - (aDayOffRank === 1 ? 30 : aDayOffRank === 2 ? 15 : 0) - (workCount.get(a.id) ?? 0) * 2;
-          const bScore = (b.preferredShiftId === shift.id ? 20 : 0) - (bDayOffRank === 1 ? 30 : bDayOffRank === 2 ? 15 : 0) - (workCount.get(b.id) ?? 0) * 2;
+          const aWeeklyShift = weeklyShift.get(a.id);
+          const bWeeklyShift = weeklyShift.get(b.id);
+          const aScore = (a.preferredShiftId === shift.id ? 20 : 0) + (aWeeklyShift === shift.id ? 100 : aWeeklyShift ? -100 : 0) - (aDayOffRank === 1 ? 30 : aDayOffRank === 2 ? 15 : 0) - (workCount.get(a.id) ?? 0) * 2;
+          const bScore = (b.preferredShiftId === shift.id ? 20 : 0) + (bWeeklyShift === shift.id ? 100 : bWeeklyShift ? -100 : 0) - (bDayOffRank === 1 ? 30 : bDayOffRank === 2 ? 15 : 0) - (workCount.get(b.id) ?? 0) * 2;
           return bScore - aScore || a.name.localeCompare(b.name);
         });
       const bilingual = candidates.filter((employee) => employee.isBilingual).slice(0, bilingualRequired);
       const selected = [...bilingual, ...candidates.filter((employee) => !bilingual.some((chosen) => chosen.id === employee.id)).slice(0, Math.max(0, required - bilingual.length))];
       selected.forEach((employee) => {
         assigned.add(employee.id);
+        if (!weeklyShift.has(employee.id)) weeklyShift.set(employee.id, shift.id);
         workCount.set(employee.id, (workCount.get(employee.id) ?? 0) + 1);
         weeklyCount.set(employee.id, (weeklyCount.get(employee.id) ?? 0) + 1);
         assignments.push({ employeeId: employee.id, date: dateKey, status: "WORKING", shiftId: shift.id });

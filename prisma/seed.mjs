@@ -30,9 +30,10 @@ async function main() {
       : [["Calls", "Phone", true, "EVERYONE", 2], ["Chats", "Live channels", true, "FOCUS", 1], ["Open Emails", "Emails", false, "FOCUS", 1], ["Internal Emails & Tickets", "Cases", false, "FOCUS", 1]];
     await prisma.taskCategory.updateMany({ where: { accountId: account.id }, data: { active: false } });
     for (const [order, [name, groupName, isLive, mode, defaultPriority]] of workstreams.entries()) {
+      const rotationOrder = { "Chats": 1, "Returns & CX Escalations": 2, "Open Emails": 3, "Internal Emails & Tickets": 4 }[name] ?? 0;
       const existing = await prisma.taskCategory.findFirst({ where: { accountId: account.id, name } });
-      if (!existing) await prisma.taskCategory.create({ data: { accountId: account.id, name, groupName, isLive, mode, defaultPriority, order } });
-      else await prisma.taskCategory.update({ where: { id: existing.id }, data: { groupName, isLive, mode, defaultPriority, active: true, order } });
+      if (!existing) await prisma.taskCategory.create({ data: { accountId: account.id, name, groupName, isLive, mode, defaultPriority, rotationOrder, order } });
+      else await prisma.taskCategory.update({ where: { id: existing.id }, data: { groupName, isLive, mode, defaultPriority, rotationOrder, active: true, order } });
     }
     for (const dayOfWeek of days) await prisma.accountOperatingWindow.upsert({ where: { accountId_dayOfWeek_startTime_endTime: { accountId: account.id, dayOfWeek, startTime, endTime } }, create: { accountId: account.id, dayOfWeek, startTime, endTime }, update: {} });
     for (const dayOfWeek of days) {

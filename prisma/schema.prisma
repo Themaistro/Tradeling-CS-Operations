@@ -164,6 +164,7 @@ model TaskCategory {
   isLive          Boolean          @default(false)
   mode            WorkstreamMode   @default(SECONDARY)
   defaultPriority Int              @default(2)
+  rotationOrder   Int              @default(0)
   assignments     TaskAssignment[]
   createdAt       DateTime         @default(now())
   updatedAt       DateTime         @updatedAt

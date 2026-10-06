@@ -17,7 +17,8 @@ export async function POST(request: Request) {
   if (!parsed.success) return NextResponse.json({ error: "Choose a valid operation date." }, { status: 400 });
   const date = new Date(`${parsed.data.date}T00:00:00.000Z`);
   const weekday = date.getUTCDay();
-  const [assignments, categories, accounts, existingTasks, existingBreaks, settings] = await Promise.all([
+  const historyStart = new Date(date); historyStart.setUTCDate(historyStart.getUTCDate() - 42);
+  const [assignments, categories, accounts, focusHistory, existingTasks, existingBreaks, settings] = await Promise.all([
     prisma.shiftAssignment.findMany({
       where: { date, status: "WORKING", schedulePeriod: { status: { in: ["APPROVED", "PUBLISHED"] } } },
       include: { employee: true, shift: { include: { staffingRules: { where: { dayOfWeek: weekday } } } } },
@@ -25,6 +26,7 @@ export async function POST(request: Request) {
     }),
     prisma.taskCategory.findMany({ where: { active: true }, orderBy: { order: "asc" } }),
     prisma.account.findMany({ where: { active: true }, include: { coverageRequirements: true, employeeCapabilities: true } }),
+    prisma.taskAssignment.findMany({ where: { date: { gte: historyStart, lt: date }, category: { mode: "FOCUS" } }, include: { category: true }, orderBy: { date: "desc" } }),
     prisma.taskAssignment.count({ where: { date } }),
     prisma.breakSchedule.count({ where: { date } }),
     prisma.appSettings.upsert({ where: { id: "global" }, create: { id: "global" }, update: {} }),
@@ -35,6 +37,8 @@ export async function POST(request: Request) {
 
   const taskRows: { date: Date; employeeId: string; categoryId: string; note: string; priority: number; startTime: string | null; endTime: string | null }[] = [];
   const warnings: string[] = [];
+  const normalizeQueue = (value: string) => value.toLowerCase().replace(/[^a-z0-9]/g, "");
+  const weekStart = new Date(date); weekStart.setUTCDate(weekStart.getUTCDate() - ((weekday - settings.weekStartsOn + 7) % 7));
   const byShift = Map.groupBy(assignments, (assignment) => assignment.shiftId ?? "unassigned");
   for (const shiftAssignments of byShift.values()) {
     const shift = shiftAssignments[0]?.shift;
@@ -42,7 +46,7 @@ export async function POST(request: Request) {
     const relevantAccounts = accounts.filter((account) => account.coverageRequirements.some((requirement) => requirement.dayOfWeek === weekday && shift.startTime <= requirement.startTime && shift.endTime >= requirement.endTime));
     const relevantAccountIds = new Set(relevantAccounts.map((account) => account.id));
     const relevantCategories = categories.filter((category) => category.accountId && relevantAccountIds.has(category.accountId));
-    const grouped = Map.groupBy(relevantCategories, (category) => category.name.toLowerCase().replace(/[^a-z0-9]/g, ""));
+    const grouped = Map.groupBy(relevantCategories, (category) => normalizeQueue(category.name));
     const queues = [...grouped.values()].map((items) => {
       const accountNames = relevantAccounts.filter((account) => items.some((item) => item.accountId === account.id)).map((account) => account.name);
       const requirements = relevantAccounts.flatMap((account) => account.coverageRequirements.filter((requirement) => requirement.dayOfWeek === weekday && shift.startTime <= requirement.startTime && shift.endTime >= requirement.endTime));
@@ -53,12 +57,25 @@ export async function POST(request: Request) {
       return shiftAssignments.filter((assignment) => accountIds.every((accountId) => accounts.find((account) => account.id === accountId)?.employeeCapabilities.some((capability) => capability.employeeId === assignment.employeeId)));
     };
     const focusOwners = new Set<string>();
-    let cursor = 0;
-    for (const queue of queues.filter((item) => item.category.mode === "FOCUS")) {
+    const focusQueues = queues.filter((item) => item.category.mode === "FOCUS").sort((left, right) => left.category.rotationOrder - right.category.rotationOrder);
+    for (const queue of focusQueues) {
       const candidates = eligible(queue);
       if (!candidates.length) { warnings.push(`${queue.category.name} has no eligible scheduled agent on ${shift.name}.`); continue; }
       const unassigned = candidates.filter((assignment) => !focusOwners.has(assignment.employeeId));
-      const assignment = (unassigned.length ? unassigned : candidates)[cursor % (unassigned.length || candidates.length)]; cursor += 1;
+      const pool = unassigned.length ? unassigned : candidates;
+      const queueKey = normalizeQueue(queue.category.name);
+      const continued = pool.find((assignment) => focusHistory.some((task) => task.employeeId === assignment.employeeId && task.date >= weekStart && normalizeQueue(task.category.name) === queueKey && task.startTime === queue.startTime));
+      const expected = pool.find((assignment) => {
+        const last = focusHistory.find((task) => task.employeeId === assignment.employeeId && task.date < weekStart && task.startTime === queue.startTime);
+        if (!last) return false;
+        const previousIndex = focusQueues.findIndex((item) => normalizeQueue(item.category.name) === normalizeQueue(last.category.name));
+        return previousIndex >= 0 && normalizeQueue(focusQueues[(previousIndex + 1) % focusQueues.length].category.name) === queueKey;
+      });
+      const assignment = continued ?? expected ?? pool.sort((left, right) => {
+        const leftLast = focusHistory.find((task) => task.employeeId === left.employeeId && normalizeQueue(task.category.name) === queueKey)?.date.getTime() ?? 0;
+        const rightLast = focusHistory.find((task) => task.employeeId === right.employeeId && normalizeQueue(task.category.name) === queueKey)?.date.getTime() ?? 0;
+        return leftLast - rightLast || left.employee.name.localeCompare(right.employee.name);
+      })[0];
       if (!unassigned.length) warnings.push(`${assignment.employee.name} must cover more than one focus queue on ${shift.name} because no additional eligible agent is available.`);
       focusOwners.add(assignment.employeeId);
       taskRows.push({ date, employeeId: assignment.employeeId, categoryId: queue.category.id, priority: 1, startTime: queue.startTime, endTime: queue.endTime, note: `${queue.accountNames.join(" + ")} · primary focus` });
