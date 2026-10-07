@@ -3,6 +3,9 @@
 import { FormEvent, useEffect, useState } from "react";
 import {
   Bell,
+  AlertTriangle,
+  ArrowRight,
+  BookOpenCheck,
   CheckCircle2,
   ClipboardList,
   Clock3,
@@ -13,6 +16,7 @@ import {
   ShieldCheck,
   Trash2,
   Users,
+  X,
 } from "lucide-react";
 import { PageHeading } from "@/components/ui/page-heading";
 
@@ -51,17 +55,144 @@ type Data = {
   shifts: Shift[];
   slackConfigured: boolean;
   slackCredentials: { botTokenConfigured: boolean; appTokenConfigured: boolean };
-  readiness: { employees: number; accounts: number; shifts: number; ready: boolean };
+  readiness: {
+    employees: number;
+    employeesWithSlack: number;
+    employeesWithAccounts: number;
+    accounts: number;
+    operatingWindows: number;
+    coverageRequirements: number;
+    tasks: number;
+    shifts: number;
+    staffingRules: number;
+    approvedSchedules: number;
+    slackReady: boolean;
+    ready: boolean;
+  };
 };
-type Tab = "general" | "shifts" | "tasks" | "slack" | "data";
+type Tab = "guide" | "general" | "shifts" | "tasks" | "slack" | "data";
+type Confirmation = {
+  title: string;
+  message: string;
+  confirmLabel: string;
+  action: () => Promise<void>;
+};
 
 const field =
   "mt-2 w-full rounded-xl border border-slate-200 bg-white px-4 py-3 text-sm text-slate-900 transition";
 
+function zonedParts(timestamp: number, timezone: string) {
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone: timezone,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hourCycle: "h23",
+  }).formatToParts(timestamp);
+  const value = (type: Intl.DateTimeFormatPartTypes) =>
+    Number(parts.find((part) => part.type === type)?.value ?? 0);
+  return {
+    year: value("year"),
+    month: value("month"),
+    day: value("day"),
+    hour: value("hour"),
+    minute: value("minute"),
+    second: value("second"),
+  };
+}
+
+function zonedWallTimeToEpoch(
+  wallTime: { year: number; month: number; day: number; hour: number; minute: number },
+  timezone: string,
+) {
+  const desired = Date.UTC(wallTime.year, wallTime.month - 1, wallTime.day, wallTime.hour, wallTime.minute);
+  let estimate = desired;
+  for (let index = 0; index < 2; index += 1) {
+    const actual = zonedParts(estimate, timezone);
+    const represented = Date.UTC(actual.year, actual.month - 1, actual.day, actual.hour, actual.minute, actual.second);
+    estimate += desired - represented;
+  }
+  return estimate;
+}
+
+function getNextPost(now: number, postTime: string, timezone: string) {
+  const current = zonedParts(now, timezone);
+  const [hour, minute] = postTime.split(":").map(Number);
+  let next = zonedWallTimeToEpoch({ ...current, hour, minute }, timezone);
+  if (next <= now) {
+    const tomorrow = new Date(Date.UTC(current.year, current.month - 1, current.day + 1));
+    next = zonedWallTimeToEpoch(
+      {
+        year: tomorrow.getUTCFullYear(),
+        month: tomorrow.getUTCMonth() + 1,
+        day: tomorrow.getUTCDate(),
+        hour,
+        minute,
+      },
+      timezone,
+    );
+  }
+  return next;
+}
+
+function PostCountdown({ settings }: { settings: Settings }) {
+  const [now, setNow] = useState(() => Date.now());
+
+  useEffect(() => {
+    const timer = window.setInterval(() => setNow(Date.now()), 1000);
+    return () => window.clearInterval(timer);
+  }, []);
+
+  if (!settings.automationEnabled) {
+    return (
+      <div className="rounded-xl border border-slate-200 bg-slate-50 p-4 text-sm text-slate-600">
+        <b className="text-slate-900">Automatic posting is off</b>
+        <p className="mt-1">Turn it on and save the settings to schedule the next post.</p>
+      </div>
+    );
+  }
+
+  const next = getNextPost(now, settings.postTime, settings.timezone);
+  const remaining = Math.max(0, Math.floor((next - now) / 1000));
+  const hours = Math.floor(remaining / 3600);
+  const minutes = Math.floor((remaining % 3600) / 60);
+  const seconds = remaining % 60;
+  const countdown = `${String(hours).padStart(2, "0")}:${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`;
+  const nextLabel = new Intl.DateTimeFormat("en-AE", {
+    timeZone: settings.timezone,
+    weekday: "long",
+    month: "short",
+    day: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+  }).format(next);
+
+  return (
+    <div className="flex flex-col gap-3 rounded-xl border border-blue-200 bg-blue-50 p-4 sm:flex-row sm:items-center sm:justify-between">
+      <div className="flex items-start gap-3">
+        <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-white text-blue-600 shadow-sm">
+          <Clock3 className="h-5 w-5" />
+        </span>
+        <div>
+          <p className="text-sm font-bold text-slate-900">Next automatic post</p>
+          <p className="mt-0.5 text-sm text-slate-600">{nextLabel} · {settings.timezone}</p>
+        </div>
+      </div>
+      <div className="sm:text-right">
+        <p className="font-mono text-2xl font-bold tracking-tight text-blue-700">{countdown}</p>
+        <p className="text-xs font-semibold uppercase tracking-wider text-blue-500">hours · minutes · seconds</p>
+      </div>
+    </div>
+  );
+}
+
 export default function SettingsPage() {
   const [data, setData] = useState<Data | null>(null);
   const [settings, setSettings] = useState<Settings | null>(null);
-  const [tab, setTab] = useState<Tab>("general");
+  const [tab, setTab] = useState<Tab>("guide");
   const [notice, setNotice] = useState<{
     kind: "success" | "error";
     text: string;
@@ -70,6 +201,9 @@ export default function SettingsPage() {
   const [testingSlack, setTestingSlack] = useState(false);
   const [botToken, setBotToken] = useState("");
   const [appToken, setAppToken] = useState("");
+  const [confirmation, setConfirmation] = useState<Confirmation | null>(null);
+  const [confirming, setConfirming] = useState(false);
+  const [guideStep, setGuideStep] = useState<number | null>(null);
 
   async function load() {
     const response = await fetch("/api/settings");
@@ -86,6 +220,12 @@ export default function SettingsPage() {
         setSettings(next.settings);
       });
   }, []);
+
+  useEffect(() => {
+    if (!notice) return;
+    const timer = window.setTimeout(() => setNotice(null), notice.kind === "success" ? 4500 : 7000);
+    return () => window.clearTimeout(timer);
+  }, [notice]);
 
   async function saveSettings() {
     if (!settings) return;
@@ -134,14 +274,18 @@ export default function SettingsPage() {
   }
 
   async function removeShift(id: string) {
-    if (
-      !confirm("Deactivate this shift? Existing schedule history will be kept.")
-    )
-      return;
-    const response = await fetch(`/api/shifts/${id}`, { method: "DELETE" });
-    const body = await response.json();
-    setNotice({ kind: response.ok ? "success" : "error", text: response.ok ? "Shift deactivated." : body.error });
-    if (response.ok) await load();
+    const shift = data?.shifts.find((item) => item.id === id);
+    setConfirmation({
+      title: "Deactivate this shift?",
+      message: `${shift?.name ?? "This shift"} will no longer be available for future schedules. Existing schedule history will be preserved.`,
+      confirmLabel: "Deactivate shift",
+      action: async () => {
+        const response = await fetch(`/api/shifts/${id}`, { method: "DELETE" });
+        const body = await response.json();
+        setNotice({ kind: response.ok ? "success" : "error", text: response.ok ? `${shift?.name ?? "Shift"} has been deactivated.` : body.error });
+        if (response.ok) await load();
+      },
+    });
   }
 
   async function updateShift(event: FormEvent<HTMLFormElement>, id: string) {
@@ -173,12 +317,29 @@ export default function SettingsPage() {
   }
 
   async function removeSlackCredentials() {
-    if (!confirm("Remove the Slack tokens saved in this application? Hosting environment tokens, if present, will remain active.")) return;
-    setSaving(true);
-    const response = await fetch("/api/settings/slack-credentials", { method: "DELETE" });
-    setNotice({ kind: response.ok ? "success" : "error", text: response.ok ? "Saved Slack credentials removed. Restart the application to stop the current Socket Mode connection." : "Saved Slack credentials could not be removed." });
-    if (response.ok) await load();
-    setSaving(false);
+    setConfirmation({
+      title: "Remove saved Slack credentials?",
+      message: "The encrypted tokens saved in this application will be removed. Tokens supplied by the hosting environment will remain active.",
+      confirmLabel: "Remove credentials",
+      action: async () => {
+        setSaving(true);
+        const response = await fetch("/api/settings/slack-credentials", { method: "DELETE" });
+        setNotice({ kind: response.ok ? "success" : "error", text: response.ok ? "Saved Slack credentials were removed. Restart the application to stop the current Socket Mode connection." : "Saved Slack credentials could not be removed." });
+        if (response.ok) await load();
+        setSaving(false);
+      },
+    });
+  }
+
+  async function confirmAction() {
+    if (!confirmation) return;
+    setConfirming(true);
+    try {
+      await confirmation.action();
+      setConfirmation(null);
+    } finally {
+      setConfirming(false);
+    }
   }
 
   if (!data || !settings)
@@ -189,6 +350,12 @@ export default function SettingsPage() {
     );
 
   const tabs = [
+    {
+      id: "guide" as const,
+      label: "Setup guide",
+      helper: `${configurationProgress(data).complete} of ${configurationProgress(data).total} ready`,
+      icon: BookOpenCheck,
+    },
     {
       id: "general" as const,
       label: "Scheduling",
@@ -223,6 +390,24 @@ export default function SettingsPage() {
 
   return (
     <div className="mx-auto max-w-7xl">
+      {notice && <Toast notice={notice} onClose={() => setNotice(null)} />}
+      {confirmation && (
+        <ConfirmDialog
+          confirmation={confirmation}
+          confirming={confirming}
+          onCancel={() => !confirming && setConfirmation(null)}
+          onConfirm={confirmAction}
+        />
+      )}
+      {guideStep !== null && (
+        <GuideWalkthrough
+          data={data}
+          stepIndex={guideStep}
+          setStepIndex={setGuideStep}
+          setTab={setTab}
+          onClose={() => setGuideStep(null)}
+        />
+      )}
       <PageHeading
         eyebrow="Configuration"
         title="Settings"
@@ -249,7 +434,7 @@ export default function SettingsPage() {
         />
       </div>
       <div className="space-y-5">
-        <aside className="grid rounded-2xl border border-slate-200 bg-white p-2 shadow-sm sm:grid-cols-2 xl:grid-cols-5">
+        <aside className="grid rounded-2xl border border-slate-200 bg-white p-2 shadow-sm sm:grid-cols-2 xl:grid-cols-6">
           {tabs.map(({ id, label, helper, icon: Icon }) => (
             <button
               key={id}
@@ -277,15 +462,7 @@ export default function SettingsPage() {
         </aside>
 
         <section className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
-          {notice && (
-            <div
-              className={`mx-6 mt-6 flex items-center gap-3 rounded-xl px-4 py-3 text-sm font-semibold ${notice.kind === "success" ? "bg-emerald-50 text-emerald-700" : "bg-red-50 text-red-700"}`}
-            >
-              <CheckCircle2 className="h-4 w-4" />
-              {notice.text}
-            </div>
-          )}
-
+          {tab === "guide" && <ConfigurationGuide data={data} setTab={setTab} onStart={() => setGuideStep(0)} />}
           {tab === "general" && (
             <div>
               <SectionHeader
@@ -597,6 +774,7 @@ export default function SettingsPage() {
                   <Toggle label="Require acknowledgement" checked={settings.requireAcknowledgement} onChange={(value)=>setSettings({...settings,requireAcknowledgement:value})} />
                   <button type="button" disabled={testingSlack} onClick={testSlack} className="flex items-center justify-center gap-2 rounded-xl border border-slate-200 p-4 text-sm font-bold text-slate-700 hover:bg-slate-50">{testingSlack && <LoaderCircle className="h-4 w-4 animate-spin" />}{testingSlack ? "Testing connection…" : "Test Slack connection"}</button>
                 </div>
+                <PostCountdown settings={settings} />
                 <div className="rounded-xl border border-blue-100 bg-blue-50 p-4 text-sm leading-6 text-blue-800"><b>Automated workflow</b><p>Approving a schedule prepares task ownership and coverage-safe breaks for every working day. At the daily posting time, the system checks today’s plan again, prepares it if needed, and then posts it to Slack.</p></div>
               </div>
               <Footer saving={saving} onSave={saveSettings} />
@@ -696,6 +874,259 @@ function StatusCard({
     </div>
   );
 }
+
+function configurationSteps(data: Data) {
+  const { readiness } = data;
+  return [
+    {
+      number: 1,
+      title: "Accounts and service hours",
+      description: "Add every customer account, choose its working days, and define the hours that require coverage.",
+      detail: `${readiness.accounts} active account${readiness.accounts === 1 ? "" : "s"} · ${readiness.operatingWindows} service window${readiness.operatingWindows === 1 ? "" : "s"}`,
+      ready: readiness.accounts > 0 && readiness.operatingWindows > 0,
+      href: "/operations",
+      action: "Configure operations",
+    },
+    {
+      number: 2,
+      title: "Required coverage",
+      description: "Set the minimum total and bilingual agents required for each account, day, and time period.",
+      detail: `${readiness.coverageRequirements} coverage rule${readiness.coverageRequirements === 1 ? "" : "s"}`,
+      ready: readiness.coverageRequirements > 0,
+      href: "/operations",
+      action: "Review coverage",
+    },
+    {
+      number: 3,
+      title: "Tasks and rotation rules",
+      description: "Create account tasks and choose whether each one is assigned to everyone, rotated as focused ownership, or treated as supporting work.",
+      detail: `${readiness.tasks} active task${readiness.tasks === 1 ? "" : "s"}`,
+      ready: readiness.tasks > 0,
+      href: "/operations",
+      action: "Configure tasks",
+    },
+    {
+      number: 4,
+      title: "Team and eligibility",
+      description: "Add agents, Slack member IDs, account eligibility, language coverage, preferred days off, and planned leave.",
+      detail: `${readiness.employees} agents · ${readiness.employeesWithSlack} with Slack · ${readiness.employeesWithAccounts} account-ready`,
+      ready: readiness.employees > 0 && readiness.employeesWithSlack === readiness.employees && readiness.employeesWithAccounts === readiness.employees,
+      href: "/team",
+      action: "Review team",
+    },
+    {
+      number: 5,
+      title: "Shifts and staffing",
+      description: "Define shift times, then set the minimum staffing and bilingual requirement for every day.",
+      detail: `${readiness.shifts} shifts · ${readiness.staffingRules} daily staffing rule${readiness.staffingRules === 1 ? "" : "s"}`,
+      ready: readiness.shifts > 0 && readiness.staffingRules > 0,
+      tab: "shifts" as Tab,
+      action: "Configure shifts",
+    },
+    {
+      number: 6,
+      title: "Scheduling, WFH, and breaks",
+      description: "Review working-day limits, consecutive days, history, WFH defaults, break lengths, spacing, and live-channel protection.",
+      detail: "Operational defaults are available and can be changed",
+      ready: true,
+      tab: "general" as Tab,
+      action: "Review policies",
+    },
+    {
+      number: 7,
+      title: "Slack delivery",
+      description: "Save the Slack credentials and channel, choose the posting time, and test the connection.",
+      detail: readiness.slackReady ? "Credentials and channel are ready" : "Slack setup is incomplete",
+      ready: readiness.slackReady,
+      tab: "slack" as Tab,
+      action: "Configure Slack",
+    },
+    {
+      number: 8,
+      title: "Generate and approve a schedule",
+      description: "Generate the month, review coverage warnings, make any adjustments, then approve it to prepare daily tasks and breaks.",
+      detail: `${readiness.approvedSchedules} approved schedule${readiness.approvedSchedules === 1 ? "" : "s"}`,
+      ready: readiness.approvedSchedules > 0,
+      href: "/schedule",
+      action: "Open schedule",
+    },
+  ];
+}
+
+function configurationProgress(data: Data) {
+  const steps = configurationSteps(data);
+  return { complete: steps.filter((step) => step.ready).length, total: steps.length };
+}
+
+function ConfigurationGuide({ data, setTab, onStart }: { data: Data; setTab: (tab: Tab) => void; onStart: () => void }) {
+  const steps = configurationSteps(data);
+  const progress = configurationProgress(data);
+  const percentage = Math.round((progress.complete / progress.total) * 100);
+
+  return (
+    <div>
+      <SectionHeader icon={BookOpenCheck} title="Configuration guide" description="Follow these steps in order to prepare the operation, generate reliable schedules, and automate daily Slack delivery." />
+      <div className="space-y-7 p-6">
+        <div className="rounded-2xl bg-slate-950 p-6 text-white">
+          <div className="flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
+            <div>
+              <p className="text-xs font-bold uppercase tracking-[0.18em] text-orange-400">Setup progress</p>
+              <h3 className="mt-2 text-2xl font-bold">{progress.complete} of {progress.total} steps ready</h3>
+              <p className="mt-2 max-w-2xl text-sm leading-6 text-slate-400">The guide checks the live configuration. Return here whenever accounts, staffing, or team details change.</p>
+            </div>
+            <div className="flex items-center gap-4"><p className="text-4xl font-bold text-white">{percentage}%</p><button type="button" onClick={onStart} className="rounded-xl bg-orange-500 px-5 py-3 text-sm font-bold text-white hover:bg-orange-600">Start guided setup</button></div>
+          </div>
+          <div className="mt-5 h-2 overflow-hidden rounded-full bg-white/10"><div className="h-full rounded-full bg-orange-500 transition-all" style={{ width: `${percentage}%` }} /></div>
+        </div>
+
+        <div className="grid gap-4 lg:grid-cols-2">
+          {steps.map((step) => (
+            <article key={step.number} className={`rounded-2xl border p-5 ${step.ready ? "border-emerald-200 bg-emerald-50/40" : "border-amber-200 bg-amber-50/50"}`}>
+              <div className="flex items-start gap-4">
+                <span className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-xl text-sm font-bold ${step.ready ? "bg-emerald-100 text-emerald-700" : "bg-amber-100 text-amber-700"}`}>{step.ready ? <CheckCircle2 className="h-5 w-5" /> : step.number}</span>
+                <div className="min-w-0 flex-1">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <h3 className="font-bold text-slate-950">{step.title}</h3>
+                    <span className={`rounded-full px-2.5 py-1 text-[10px] font-bold uppercase tracking-wider ${step.ready ? "bg-emerald-100 text-emerald-700" : "bg-amber-100 text-amber-700"}`}>{step.ready ? "Ready" : "Needs attention"}</span>
+                  </div>
+                  <p className="mt-2 text-sm leading-6 text-slate-600">{step.description}</p>
+                  <p className="mt-3 text-xs font-semibold text-slate-500">{step.detail}</p>
+                  {step.href ? (
+                    <a href={step.href} className="mt-4 inline-flex items-center gap-2 text-sm font-bold text-blue-700 hover:text-blue-900">{step.action}<ArrowRight className="h-4 w-4" /></a>
+                  ) : (
+                    <button type="button" onClick={() => step.tab && setTab(step.tab)} className="mt-4 inline-flex items-center gap-2 text-sm font-bold text-blue-700 hover:text-blue-900">{step.action}<ArrowRight className="h-4 w-4" /></button>
+                  )}
+                </div>
+              </div>
+            </article>
+          ))}
+        </div>
+
+        <div className="rounded-2xl border border-blue-200 bg-blue-50 p-5">
+          <h3 className="font-bold text-blue-950">Designed to change with the operation</h3>
+          <p className="mt-2 text-sm leading-6 text-blue-800">Customer accounts, working days, service hours, coverage levels, shifts, staffing, team eligibility, task ownership, rotation order, WFH rules, breaks, leave, and Slack delivery are all managed through the application. The engine reads these values whenever it generates a new schedule.</p>
+          <p className="mt-2 text-sm leading-6 text-blue-700">System safeguards—such as preventing invalid times, protecting live coverage during breaks, and keeping approved history—remain built in so configuration changes cannot silently damage the operation.</p>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function GuideWalkthrough({
+  data,
+  stepIndex,
+  setStepIndex,
+  setTab,
+  onClose,
+}: {
+  data: Data;
+  stepIndex: number;
+  setStepIndex: (step: number) => void;
+  setTab: (tab: Tab) => void;
+  onClose: () => void;
+}) {
+  const steps = configurationSteps(data);
+  const step = steps[stepIndex];
+  const last = stepIndex === steps.length - 1;
+  const openSettingsSection = () => {
+    if ("tab" in step && step.tab) {
+      setTab(step.tab);
+      onClose();
+    }
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/55 p-5 backdrop-blur-sm" role="dialog" aria-modal="true" aria-labelledby="guide-step-title">
+      <div className="w-full max-w-2xl overflow-hidden rounded-3xl bg-white shadow-2xl shadow-slate-950/30">
+        <div className="bg-slate-950 p-6 text-white">
+          <div className="flex items-start justify-between gap-4">
+            <div><p className="text-xs font-bold uppercase tracking-[0.18em] text-orange-400">Guided setup · Step {stepIndex + 1} of {steps.length}</p><h2 id="guide-step-title" className="mt-3 text-2xl font-bold">{step.title}</h2></div>
+            <button type="button" onClick={onClose} aria-label="Close guided setup" className="rounded-xl bg-white/10 p-2 text-slate-300 hover:bg-white/20 hover:text-white"><X className="h-5 w-5" /></button>
+          </div>
+          <div className="mt-5 h-1.5 overflow-hidden rounded-full bg-white/10"><div className="h-full rounded-full bg-orange-500" style={{ width: `${((stepIndex + 1) / steps.length) * 100}%` }} /></div>
+        </div>
+        <div className="p-7">
+          <div className={`flex items-center gap-3 rounded-xl p-4 ${step.ready ? "bg-emerald-50 text-emerald-800" : "bg-amber-50 text-amber-800"}`}>
+            {step.ready ? <CheckCircle2 className="h-5 w-5" /> : <AlertTriangle className="h-5 w-5" />}
+            <div><p className="text-sm font-bold">{step.ready ? "This step is ready" : "This step needs attention"}</p><p className="mt-0.5 text-xs">{step.detail}</p></div>
+          </div>
+          <p className="mt-6 text-base leading-7 text-slate-700">{step.description}</p>
+          <div className="mt-6 rounded-2xl border border-slate-200 bg-slate-50 p-5">
+            <p className="text-xs font-bold uppercase tracking-wider text-slate-400">What to do</p>
+            <p className="mt-2 text-sm leading-6 text-slate-600">Open the linked configuration area, review the current values, and save any required changes. Return to the Setup guide to continue or restart this walkthrough at any time.</p>
+            {step.href ? <a href={step.href} className="mt-4 inline-flex items-center gap-2 rounded-xl bg-slate-950 px-5 py-3 text-sm font-bold text-white">{step.action}<ArrowRight className="h-4 w-4" /></a> : <button type="button" onClick={openSettingsSection} className="mt-4 inline-flex items-center gap-2 rounded-xl bg-slate-950 px-5 py-3 text-sm font-bold text-white">{step.action}<ArrowRight className="h-4 w-4" /></button>}
+          </div>
+          <div className="mt-7 flex items-center justify-between gap-3">
+            <button type="button" disabled={stepIndex === 0} onClick={() => setStepIndex(stepIndex - 1)} className="rounded-xl border border-slate-200 px-5 py-3 text-sm font-bold text-slate-700 disabled:opacity-40">Back</button>
+            <button type="button" onClick={() => last ? onClose() : setStepIndex(stepIndex + 1)} className="rounded-xl bg-orange-500 px-6 py-3 text-sm font-bold text-white hover:bg-orange-600">{last ? "Finish walkthrough" : "Next step"}</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function Toast({
+  notice,
+  onClose,
+}: {
+  notice: { kind: "success" | "error"; text: string };
+  onClose: () => void;
+}) {
+  const success = notice.kind === "success";
+  return (
+    <div className="fixed right-5 top-5 z-50 w-[calc(100%-2.5rem)] max-w-md animate-[fadeIn_.2s_ease-out]">
+      <div className={`flex items-start gap-3 rounded-2xl border bg-white p-4 shadow-2xl shadow-slate-900/15 ${success ? "border-emerald-200" : "border-red-200"}`} role="status" aria-live="polite">
+        <span className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-xl ${success ? "bg-emerald-50 text-emerald-600" : "bg-red-50 text-red-600"}`}>
+          {success ? <CheckCircle2 className="h-5 w-5" /> : <AlertTriangle className="h-5 w-5" />}
+        </span>
+        <div className="min-w-0 flex-1 pt-0.5">
+          <p className="text-sm font-bold text-slate-950">{success ? "Changes saved" : "Something needs attention"}</p>
+          <p className="mt-1 text-sm leading-5 text-slate-600">{notice.text}</p>
+        </div>
+        <button type="button" onClick={onClose} aria-label="Dismiss notification" className="rounded-lg p-1.5 text-slate-400 hover:bg-slate-100 hover:text-slate-700">
+          <X className="h-4 w-4" />
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function ConfirmDialog({
+  confirmation,
+  confirming,
+  onCancel,
+  onConfirm,
+}: {
+  confirmation: Confirmation;
+  confirming: boolean;
+  onCancel: () => void;
+  onConfirm: () => void;
+}) {
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/45 p-5 backdrop-blur-sm" role="dialog" aria-modal="true" aria-labelledby="confirmation-title">
+      <div className="w-full max-w-md rounded-3xl border border-white/50 bg-white p-6 shadow-2xl shadow-slate-950/25">
+        <div className="flex items-start gap-4">
+          <span className="flex h-12 w-12 shrink-0 items-center justify-center rounded-2xl bg-red-50 text-red-600">
+            <AlertTriangle className="h-6 w-6" />
+          </span>
+          <div>
+            <h2 id="confirmation-title" className="text-xl font-bold text-slate-950">{confirmation.title}</h2>
+            <p className="mt-2 text-sm leading-6 text-slate-600">{confirmation.message}</p>
+          </div>
+        </div>
+        <div className="mt-7 flex flex-col-reverse gap-3 sm:flex-row sm:justify-end">
+          <button type="button" disabled={confirming} onClick={onCancel} className="rounded-xl border border-slate-200 px-5 py-3 text-sm font-bold text-slate-700 hover:bg-slate-50 disabled:opacity-50">Cancel</button>
+          <button type="button" disabled={confirming} onClick={onConfirm} className="flex min-w-40 items-center justify-center gap-2 rounded-xl bg-red-600 px-5 py-3 text-sm font-bold text-white hover:bg-red-700 disabled:opacity-60">
+            {confirming && <LoaderCircle className="h-4 w-4 animate-spin" />}
+            {confirming ? "Working…" : confirmation.confirmLabel}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function Label({
   title,
   helper,
