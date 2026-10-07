@@ -3,6 +3,7 @@
 import { FormEvent, useEffect, useState } from "react";
 import { CalendarDays, ChevronLeft, ChevronRight, Clock3, LoaderCircle, Plus, Sparkles, Trash2, UserRound } from "lucide-react";
 import { PageHeading } from "@/components/ui/page-heading";
+import { TaskIcon } from "@/components/ui/task-icon";
 type Daily = {
   assignments: {
     id: string;
@@ -200,7 +201,7 @@ export default function TasksPage() {
                   {!tasks.length && <div className="rounded-xl border border-dashed border-slate-200 p-5 text-center text-sm text-slate-400">No tasks assigned yet.</div>}
                   {tasks.map((t) => (
                     <div key={t.id} className="relative flex gap-3 rounded-xl border border-slate-100 bg-white p-3.5 pr-10 shadow-sm">
-                      <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-violet-50 text-lg">{t.category.icon}</span>
+                      <TaskIcon name={t.category.name} />
                       <div className="min-w-0"><div className="flex flex-wrap items-center gap-2"><b className="text-sm text-slate-900">{t.category.name}</b><span className={`rounded-full px-2 py-0.5 text-[10px] font-extrabold ${t.priority===1?"bg-orange-100 text-orange-700":"bg-slate-100 text-slate-600"}`}>P{t.priority}</span></div>
                       {t.startTime && t.endTime && <span className="mt-1 block text-xs font-semibold text-slate-400">{t.startTime}–{t.endTime}</span>}
                       {t.note && (
@@ -225,7 +226,7 @@ export default function TasksPage() {
                     <option value="">Choose task</option>
                     {data.categories.map((c) => (
                       <option key={c.id} value={c.id}>
-                        {c.icon} {c.name}
+                        {c.name}
                       </option>
                     ))}
                   </select>

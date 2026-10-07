@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import type { Block, KnownBlock } from "@slack/types";
 import { prisma } from "@/lib/db/prisma";
 import { slackClient } from "@/lib/slack/client";
+import { taskEmoji } from "@/components/ui/task-icon";
 export async function POST(request: Request) {
   const { date: dateValue } = await request.json();
   if (!/^\d{4}-\d{2}-\d{2}$/.test(dateValue || ""))
@@ -54,7 +55,7 @@ export async function POST(request: Request) {
     const people = group.map((item) => `${mention(item.employeeId)} P${item.priority}`).join(", ");
     const period = task.startTime && task.endTime ? ` · ${task.startTime}–${task.endTime}` : "";
     const context = settings.includeNotesInSlack && task.note ? ` _(${task.note})_` : "";
-    return `*${task.category.name}*${period}: ${people}${context}`;
+    return `${taskEmoji(task.category.name)} *${task.category.name}*${period}: ${people}${context}`;
   });
   const shiftLine = assignments.map((assignment) => `${mention(assignment.employeeId)} · ${assignment.shift?.name ?? "Shift"} ${assignment.shift?.startTime ?? ""}–${assignment.shift?.endTime ?? ""}`).join("\n");
   const breakGroups = Map.groupBy(breaks.sort((left, right) => left.startTime.localeCompare(right.startTime)), (item) => `${item.type}|${item.startTime}|${item.endTime}`);
