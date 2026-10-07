@@ -50,8 +50,10 @@ function buildConsecutiveOffPlan(input: Input) {
 }
 
 function leaveStatus(type: ScheduleEmployee["timeOff"][number]["type"]): GeneratedAssignment["status"] {
-  if (type === "SICK") return "SICK";
-  return "PTO";
+  if (type === "PTO") return "PTO";
+  if (type === "UNPAID") return "UNPAID_LEAVE";
+  if (type === "OTHER") return "OTHER_LEAVE";
+  return type;
 }
 
 export function generateSchedule(input: Input) {

@@ -8,7 +8,7 @@ This is a new application that brings together the strongest parts of the existi
 
 - One shared team directory for schedules, tasks, leave, and Slack
 - Calendar-based monthly schedule generation and approval
-- Preferred shifts, preferred days off, PTO, sick leave, and bilingual coverage
+- Preferred shifts, preferred days off, annual leave, emergency leave, comp off, public holidays, sick leave, and bilingual coverage
 - Per-day staffing rules for headcount, calls, chats, tickets, and bilingual coverage
 - Manual schedule corrections with protected published history
 - Daily task assignments, notes, flexible breaks, and eligibility enforcement
@@ -17,6 +17,7 @@ This is a new application that brings together the strongest parts of the existi
 - Weekly batch preparation and a final automatic plan check before each Slack post
 - Slack acknowledgement recording through Socket Mode
 - Live readiness, coverage, task, and Slack reporting
+- Excel roster downloads, with an optional daily-tasks sheet
 - Portable JSON backups
 - Single-administrator sign-in
 - PostgreSQL persistence

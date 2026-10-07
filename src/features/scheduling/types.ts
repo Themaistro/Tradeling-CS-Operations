@@ -5,7 +5,7 @@ export type ScheduleEmployee = {
   isBilingual: boolean;
   accountIds: string[];
   dayOffPreferences: { dayOfWeek: number; rank: number }[];
-  timeOff: { date: string; type: "PTO" | "SICK" | "UNPAID" | "OTHER" }[];
+  timeOff: { date: string; type: "PTO" | "ANNUAL_LEAVE" | "EMERGENCY_LEAVE" | "COMP_OFF" | "PUBLIC_HOLIDAY" | "SICK" | "UNPAID" | "OTHER" | "UNPAID_LEAVE" | "OTHER_LEAVE" }[];
 };
 
 export type ScheduleShift = {
@@ -20,7 +20,7 @@ export type ScheduleShift = {
 export type GeneratedAssignment = {
   employeeId: string;
   date: string;
-  status: "WORKING" | "OFF" | "PTO" | "SICK";
+  status: "WORKING" | "OFF" | "PTO" | "ANNUAL_LEAVE" | "EMERGENCY_LEAVE" | "COMP_OFF" | "PUBLIC_HOLIDAY" | "SICK" | "UNPAID_LEAVE" | "OTHER_LEAVE";
   shiftId: string | null;
 };
 

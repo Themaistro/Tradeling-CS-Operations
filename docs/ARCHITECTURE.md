@@ -12,12 +12,13 @@ Tradeling CS Operations combines workforce scheduling and daily task coordinatio
 
 ## Operational flow
 
-1. Team records define availability, shift preference, language coverage, and dated leave.
+1. Team records define availability, shift preference, language coverage, and dated leave. Annual leave, comp off, and public holidays are planned before generation. Emergency leave can update an existing roster and removes that employee's tasks and breaks for the affected date.
 2. The generator combines those records with weekday staffing rules and produces a draft schedule.
 3. Approval exposes only working employees to Daily Tasks and prepares task ownership and coverage-safe breaks for every working date in the month.
 4. Daily task and break APIs independently verify that the employee is eligible for the selected date. A weekly batch action can safely fill missing plans without overwriting existing work.
 5. Before an automatic Slack post, the worker builds today’s plan if it is still missing, then publishes the approved roster at the configured time.
 6. Socket Mode acknowledgement clicks are written back to the same employee, category, and date.
+7. Schedule downloads produce a shareable Excel roster. Daily task assignments are excluded by default and can be added as a separate sheet when a manager needs the combined file.
 
 ## Design principles
 

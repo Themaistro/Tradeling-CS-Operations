@@ -11,9 +11,11 @@ export async function POST(request: Request) {
   }
 
   const response = NextResponse.json({ success: true });
+  const forwardedProtocol = request.headers.get("x-forwarded-proto")?.split(",")[0]?.trim();
+  const secure = forwardedProtocol ? forwardedProtocol === "https" : new URL(request.url).protocol === "https:";
   response.cookies.set("cs_operations_session", await createSessionToken(), {
     httpOnly: true,
-    secure: process.env.NODE_ENV === "production",
+    secure,
     sameSite: "lax",
     path: "/",
     maxAge: SESSION_MAX_AGE,

@@ -22,14 +22,26 @@ enum AssignmentStatus {
   WORKING
   OFF
   PTO
+  ANNUAL_LEAVE
+  EMERGENCY_LEAVE
+  COMP_OFF
+  PUBLIC_HOLIDAY
   SICK
+  UNPAID_LEAVE
+  OTHER_LEAVE
 }
 
 enum TimeOffType {
   PTO
+  ANNUAL_LEAVE
+  EMERGENCY_LEAVE
+  COMP_OFF
+  PUBLIC_HOLIDAY
   SICK
   UNPAID
   OTHER
+  UNPAID_LEAVE
+  OTHER_LEAVE
 }
 
 enum SlackPostStatus {
@@ -112,7 +124,7 @@ model TimeOff {
   employeeId String
   employee   Employee    @relation(fields: [employeeId], references: [id], onDelete: Cascade)
   date       DateTime    @db.Date
-  type       TimeOffType @default(PTO)
+  type       TimeOffType @default(ANNUAL_LEAVE)
   note       String?
   createdAt  DateTime    @default(now())
 

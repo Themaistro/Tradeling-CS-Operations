@@ -1,6 +1,6 @@
 "use client";
 import { useEffect, useState } from "react";
-import { AlertTriangle, CalendarDays, CheckCircle2, ChevronLeft, ChevronRight, LayoutGrid, List, LoaderCircle, LockOpen } from "lucide-react";
+import { AlertTriangle, CalendarDays, CheckCircle2, ChevronLeft, ChevronRight, Download, LayoutGrid, List, LoaderCircle, LockOpen } from "lucide-react";
 import { PageHeading } from "@/components/ui/page-heading";
 type Period = {
   status: string;
@@ -33,6 +33,18 @@ function assignmentTone(assignment?: Assignment) {
   const name = assignment.shift?.name.toLowerCase() ?? "";
   return name.includes("late") || name.includes("night") ? "bg-blue-50 text-blue-900" : "bg-emerald-50 text-emerald-900";
 }
+const statusLabels: Record<string, string> = {
+  WORKING: "Working",
+  OFF: "Off",
+  PTO: "Annual leave",
+  ANNUAL_LEAVE: "Annual leave",
+  EMERGENCY_LEAVE: "Emergency leave",
+  COMP_OFF: "Comp off",
+  PUBLIC_HOLIDAY: "Public holiday",
+  SICK: "Sick leave",
+  UNPAID_LEAVE: "Unpaid leave",
+  OTHER_LEAVE: "Other leave",
+};
 export default function SchedulePage() {
   const now = new Date();
   const [year, setYear] = useState(now.getFullYear());
@@ -43,6 +55,7 @@ export default function SchedulePage() {
   const [shifts, setShifts] = useState<Shift[]>([]);
   const [view, setView] = useState<"cards" | "weekly">("cards");
   const [weekIndex, setWeekIndex] = useState(0);
+  const [includeTasks, setIncludeTasks] = useState(false);
   const load = () =>
     fetch(`/api/schedule?year=${year}&month=${month}`)
       .then((r) => r.json())
@@ -219,6 +232,15 @@ export default function SchedulePage() {
           <button disabled={loading} onClick={reopen} className="flex items-center gap-2 rounded-xl border border-amber-300 bg-amber-50 px-5 py-3 font-bold text-amber-800"><LockOpen className="h-4 w-4" />Reopen for changes</button>
         )}
         {period && <span className={`inline-flex items-center rounded-xl px-4 py-3 text-xs font-bold ${period.status === "PUBLISHED" ? "bg-emerald-50 text-emerald-700" : period.status === "APPROVED" ? "bg-blue-50 text-blue-700" : "bg-slate-100 text-slate-600"}`}>Status: {period.status}</span>}
+        {period && <div className="ml-auto flex flex-wrap items-center gap-3 rounded-xl border border-slate-200 bg-slate-50 px-3 py-2">
+          <label className="flex items-center gap-2 text-xs font-semibold text-slate-600">
+            <input type="checkbox" checked={includeTasks} onChange={(event) => setIncludeTasks(event.target.checked)} className="accent-orange-500" />
+            Include daily tasks
+          </label>
+          <a href={`/api/schedule/export?year=${year}&month=${month}&includeTasks=${includeTasks}`} className="flex items-center gap-2 rounded-lg bg-white px-3 py-2 text-xs font-bold text-slate-800 shadow-sm ring-1 ring-slate-200">
+            <Download className="h-4 w-4" /> Download Excel
+          </a>
+        </div>}
         </div>
       </div>
       {message && (
@@ -283,7 +305,7 @@ export default function SchedulePage() {
                     const outside = day.getUTCMonth() !== month - 1;
                     return <td key={key} className={`border-r border-slate-200 p-1 align-middle ${outside ? "bg-slate-50" : ""}`}>
                       {outside ? <div className="min-h-20" /> : <div className={`flex min-h-20 flex-col items-center justify-center rounded-lg px-2 py-3 text-center ${assignmentTone(assignment)}`}>
-                        {!assignment || assignment.status === "OFF" ? <b>OFF</b> : assignment.status !== "WORKING" ? <><b>{assignment.status}</b><span className="mt-1 text-xs opacity-70">Leave</span></> : <><b>{assignment.shift?.name ?? "Working"}</b>{assignment.shift && <span className="mt-1 text-xs">{readableTime(shifts.find((shift) => shift.id === assignment.shift?.id)?.startTime ?? "09:00")} – {readableTime(shifts.find((shift) => shift.id === assignment.shift?.id)?.endTime ?? "18:00")}</span>}{breaks.map((item) => <span key={item.id} className="mt-1 text-[11px] font-semibold opacity-75">Break {readableTime(item.startTime)}–{readableTime(item.endTime)}</span>)}</>}
+                        {!assignment || assignment.status === "OFF" ? <b>OFF</b> : assignment.status !== "WORKING" ? <><b>{statusLabels[assignment.status] ?? assignment.status}</b><span className="mt-1 text-xs opacity-70">Not scheduled</span></> : <><b>{assignment.shift?.name ?? "Working"}</b>{assignment.shift && <span className="mt-1 text-xs">{readableTime(shifts.find((shift) => shift.id === assignment.shift?.id)?.startTime ?? "09:00")} – {readableTime(shifts.find((shift) => shift.id === assignment.shift?.id)?.endTime ?? "18:00")}</span>}{breaks.map((item) => <span key={item.id} className="mt-1 text-[11px] font-semibold opacity-75">Break {readableTime(item.startTime)}–{readableTime(item.endTime)}</span>)}</>}
                         {assignment?.status === "WORKING" && (period.status === "DRAFT" ? <button onClick={() => void editAssignment(assignment.id, assignment.status, assignment.shift?.id, assignment.workLocation === "WFH" ? "OFFICE" : "WFH")} className={`mt-2 rounded-md px-2 py-1 text-[10px] font-extrabold ${assignment.workLocation === "WFH" ? "bg-blue-600 text-white" : "bg-white/70 text-slate-500 ring-1 ring-slate-300"}`}>{assignment.workLocation === "WFH" ? "WFH" : "Office"}</button> : assignment.workLocation === "WFH" ? <span className="mt-2 rounded-md bg-blue-600 px-2 py-1 text-[10px] font-extrabold text-white">WFH</span> : null)}
                       </div>}
                     </td>;
@@ -336,8 +358,13 @@ export default function SchedulePage() {
                         >
                           <option value="WORKING">Working</option>
                           <option value="OFF">Off</option>
-                          <option value="PTO">PTO</option>
-                          <option value="SICK">Sick</option>
+                          <option value="ANNUAL_LEAVE">Annual leave</option>
+                          <option value="EMERGENCY_LEAVE">Emergency leave</option>
+                          <option value="COMP_OFF">Comp off</option>
+                          <option value="PUBLIC_HOLIDAY">Public holiday</option>
+                          <option value="SICK">Sick leave</option>
+                          <option value="UNPAID_LEAVE">Unpaid leave</option>
+                          <option value="OTHER_LEAVE">Other leave</option>
                         </select>
                       ) : <span className="text-right text-xs font-bold text-slate-500">{a.status}</span>}
                     </div>

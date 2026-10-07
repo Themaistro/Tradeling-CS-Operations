@@ -14,7 +14,7 @@ import { PageHeading } from "@/components/ui/page-heading";
 type Shift = { id: string; name: string };
 type Leave = {
   date: string;
-  type: "PTO" | "SICK" | "UNPAID" | "OTHER";
+  type: "PTO" | "ANNUAL_LEAVE" | "EMERGENCY_LEAVE" | "COMP_OFF" | "PUBLIC_HOLIDAY" | "SICK" | "UNPAID" | "OTHER" | "UNPAID_LEAVE" | "OTHER_LEAVE";
   note: string | null;
 };
 type Employee = {
@@ -28,6 +28,18 @@ type Employee = {
   timeOff: Leave[];
 };
 const days = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+const leaveLabels: Record<Leave["type"], string> = {
+  PTO: "Annual leave",
+  ANNUAL_LEAVE: "Annual leave",
+  EMERGENCY_LEAVE: "Emergency leave",
+  COMP_OFF: "Comp off",
+  PUBLIC_HOLIDAY: "Public holiday",
+  SICK: "Sick leave",
+  UNPAID: "Unpaid leave",
+  OTHER: "Other leave",
+  UNPAID_LEAVE: "Unpaid leave",
+  OTHER_LEAVE: "Other leave",
+};
 export default function TeamPage() {
   const [employees, setEmployees] = useState<Employee[]>([]);
   const [shifts, setShifts] = useState<Shift[]>([]);
@@ -295,7 +307,10 @@ function EmployeeEditor({
         <div className="mt-7">
           <div className="flex items-center gap-2">
             <CalendarOff className="h-4 w-4 text-orange-500" />
-            <p className="text-sm font-bold">PTO and leave</p>
+            <div>
+              <p className="text-sm font-bold">Leave and planned exceptions</p>
+              <p className="mt-1 text-xs text-slate-500">Add annual leave, comp off, and public holidays before generating the roster. Emergency leave updates an existing schedule immediately.</p>
+            </div>
           </div>
           <div className="mt-3 space-y-2">
             {leave.map((l, i) => (
@@ -304,7 +319,7 @@ function EmployeeEditor({
                 className="flex items-center gap-2 rounded-xl bg-slate-50 p-3 text-sm"
               >
                 <b>{l.date}</b>
-                <span>{l.type}</span>
+                <span>{leaveLabels[l.type]}</span>
                 <button
                   type="button"
                   onClick={() => setLeave((v) => v.filter((_, x) => x !== i))}
@@ -315,36 +330,49 @@ function EmployeeEditor({
               </div>
             ))}
           </div>
-          <div className="mt-3 grid grid-cols-[1fr_110px_auto] gap-2">
-            <input
-              id="leave-date"
-              type="date"
-              className="rounded-xl border border-slate-200 px-3"
-            />
+          <div className="mt-3 grid gap-2 sm:grid-cols-2">
+            <label className="text-xs font-semibold text-slate-500">Start date
+              <input id="leave-date" type="date" className="mt-1 block w-full rounded-xl border border-slate-200 px-3 py-3 text-sm text-slate-900" />
+            </label>
+            <label className="text-xs font-semibold text-slate-500">End date <span className="font-normal">(optional)</span>
+              <input id="leave-end-date" type="date" className="mt-1 block w-full rounded-xl border border-slate-200 px-3 py-3 text-sm text-slate-900" />
+            </label>
             <select
               id="leave-type"
-              className="rounded-xl border border-slate-200 px-2"
+              className="rounded-xl border border-slate-200 px-3 py-3 text-sm sm:col-span-2"
             >
-              <option>PTO</option>
-              <option>SICK</option>
-              <option>UNPAID</option>
-              <option>OTHER</option>
+              <option value="ANNUAL_LEAVE">Annual leave</option>
+              <option value="EMERGENCY_LEAVE">Emergency leave</option>
+              <option value="COMP_OFF">Comp off</option>
+              <option value="PUBLIC_HOLIDAY">Public holiday</option>
+              <option value="SICK">Sick leave</option>
+              <option value="UNPAID_LEAVE">Unpaid leave</option>
+              <option value="OTHER_LEAVE">Other leave</option>
             </select>
             <button
               type="button"
               onClick={() => {
-                const date = (
+                const start = (
                   document.getElementById("leave-date") as HTMLInputElement
                 ).value;
+                const end = (document.getElementById("leave-end-date") as HTMLInputElement).value || start;
                 const type = (
                   document.getElementById("leave-type") as HTMLSelectElement
                 ).value as Leave["type"];
-                if (date && !leave.some((l) => l.date === date))
-                  setLeave((v) => [...v, { date, type, note: null }]);
+                if (!start || end < start) return;
+                const dates: Leave[] = [];
+                const cursor = new Date(`${start}T00:00:00.000Z`);
+                const last = new Date(`${end}T00:00:00.000Z`);
+                while (cursor <= last) {
+                  const date = cursor.toISOString().slice(0, 10);
+                  if (!leave.some((item) => item.date === date)) dates.push({ date, type, note: null });
+                  cursor.setUTCDate(cursor.getUTCDate() + 1);
+                }
+                setLeave((value) => [...value, ...dates].sort((left, right) => left.date.localeCompare(right.date)));
               }}
-              className="rounded-xl bg-slate-950 px-4 py-3 text-white"
+              className="flex items-center justify-center gap-2 rounded-xl bg-slate-950 px-4 py-3 text-sm font-bold text-white sm:col-span-2"
             >
-              <Plus className="h-4 w-4" />
+              <Plus className="h-4 w-4" /> Add leave dates
             </button>
           </div>
         </div>
