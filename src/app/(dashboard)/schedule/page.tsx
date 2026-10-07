@@ -100,8 +100,8 @@ export default function SchedulePage() {
       return;
     }
     if (r.ok) {
-      const { created = 0, existing = 0, failed = 0 } = body.planning ?? {};
-      setMessage(`Schedule approved. ${created} daily plan${created === 1 ? "" : "s"} prepared${existing ? `; ${existing} existing plan${existing === 1 ? " was" : "s were"} kept` : ""}.${failed ? ` ${failed} day${failed === 1 ? " needs" : "s need"} review.` : " Daily Tasks is ready for the month."}`);
+      const { created = 0, existing = 0, failed = 0, skipped = false } = body.planning ?? {};
+      setMessage(skipped ? "Schedule approved. Automatic daily-plan preparation is disabled; build plans from Daily Tasks when needed." : `Schedule approved. ${created} daily plan${created === 1 ? "" : "s"} prepared${existing ? `; ${existing} existing plan${existing === 1 ? " was" : "s were"} kept` : ""}.${failed ? ` ${failed} day${failed === 1 ? " needs" : "s need"} review.` : " Daily Tasks is ready for the month."}`);
     } else setMessage(body.error ?? "Could not approve the schedule.");
     await load();
     setLoading(false);

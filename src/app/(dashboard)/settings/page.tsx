@@ -23,6 +23,12 @@ type Settings = {
   slackMessageHeader: string;
   automationEnabled: boolean;
   maxConsecutiveDays: number;
+  maxWeeklyDays: number;
+  historyWindowDays: number;
+  scheduleBuildCutoff: number;
+  wfhDays: number[];
+  lateShiftWfh: boolean;
+  autoPrepareDailyPlans: boolean;
   weekStartsOn: number;
   mainBreakMinutes: number;
   shortBreakMinutes: number;
@@ -44,6 +50,7 @@ type Data = {
   settings: Settings;
   shifts: Shift[];
   slackConfigured: boolean;
+  readiness: { employees: number; accounts: number; shifts: number; ready: boolean };
 };
 type Tab = "general" | "shifts" | "tasks" | "slack" | "data";
 
@@ -59,6 +66,7 @@ export default function SettingsPage() {
     text: string;
   } | null>(null);
   const [saving, setSaving] = useState(false);
+  const [testingSlack, setTestingSlack] = useState(false);
 
   async function load() {
     const response = await fetch("/api/settings");
@@ -144,6 +152,14 @@ export default function SettingsPage() {
     setSaving(false);
   }
 
+  async function testSlack() {
+    setTestingSlack(true);
+    const response = await fetch("/api/slack/status");
+    const result = await response.json();
+    setNotice({ kind: result.connected ? "success" : "error", text: result.connected ? `Connected to ${result.team} as ${result.user}.` : result.error || "Slack connection failed." });
+    setTestingSlack(false);
+  }
+
   if (!data || !settings)
     return (
       <div className="flex min-h-64 items-center justify-center">
@@ -154,8 +170,8 @@ export default function SettingsPage() {
   const tabs = [
     {
       id: "general" as const,
-      label: "General",
-      helper: "Working rules",
+      label: "Scheduling",
+      helper: `Prepare on day ${settings.scheduleBuildCutoff}`,
       icon: Settings2,
     },
     {
@@ -195,8 +211,8 @@ export default function SettingsPage() {
         <StatusCard
           icon={ShieldCheck}
           label="Application"
-          value="Ready"
-          tone="emerald"
+          value={data.readiness.ready ? "Core setup ready" : "Setup incomplete"}
+          tone={data.readiness.ready ? "emerald" : "amber"}
         />
         <StatusCard
           icon={Clock3}
@@ -207,7 +223,7 @@ export default function SettingsPage() {
         <StatusCard
           icon={Bell}
           label="Slack connection"
-          value={data.slackConfigured ? "Credentials ready" : "Setup required"}
+          value={data.slackConfigured && settings.slackChannelId ? "Ready to test" : "Setup required"}
           tone={data.slackConfigured ? "emerald" : "amber"}
         />
       </div>
@@ -253,8 +269,8 @@ export default function SettingsPage() {
             <div>
               <SectionHeader
                 icon={Settings2}
-                title="General settings"
-                description="Set the calendar and workload rules used across the application."
+                title="Scheduling policy"
+                description="Control how future rosters continue from history, allocate working days, and apply WFH rules."
               />
               <div className="space-y-6 p-6">
                 <div className="grid gap-5 lg:grid-cols-3">
@@ -316,7 +332,23 @@ export default function SettingsPage() {
                       className={field}
                     />
                   </Label>
+                  <Label title="Working days per week" helper="The normal weekly maximum for each agent">
+                    <input type="number" min="1" max="7" value={settings.maxWeeklyDays} onChange={(e) => setSettings({ ...settings, maxWeeklyDays: Number(e.target.value) })} className={field} />
+                  </Label>
+                  <Label title="Previous-history window" helper="Days reviewed before the new schedule starts">
+                    <input type="number" min="3" max="14" value={settings.historyWindowDays} onChange={(e) => setSettings({ ...settings, historyWindowDays: Number(e.target.value) })} className={field} />
+                  </Label>
+                  <Label title="Monthly preparation day" helper="Recommended day to begin preparing the next roster">
+                    <input type="number" min="1" max="28" value={settings.scheduleBuildCutoff} onChange={(e) => setSettings({ ...settings, scheduleBuildCutoff: Number(e.target.value) })} className={field} />
+                  </Label>
                 </div>
+                <div className="rounded-2xl border border-slate-200 p-5">
+                  <h3 className="font-bold text-slate-900">Work-from-home policy</h3>
+                  <p className="mt-1 text-sm text-slate-500">Generated schedules apply these defaults. Draft assignments can still be changed manually.</p>
+                  <div className="mt-4 flex flex-wrap gap-2">{["Sunday","Monday","Tuesday","Wednesday","Thursday","Friday","Saturday"].map((day,index)=><button type="button" key={day} onClick={()=>setSettings({...settings,wfhDays:settings.wfhDays.includes(index)?settings.wfhDays.filter((value)=>value!==index):[...settings.wfhDays,index]})} className={`rounded-lg border px-3 py-2 text-xs font-bold ${settings.wfhDays.includes(index)?"border-blue-500 bg-blue-50 text-blue-700":"border-slate-200 text-slate-500"}`}>{day.slice(0,3)}</button>)}</div>
+                  <label className="mt-4 flex items-center gap-3 text-sm font-bold text-slate-700"><input type="checkbox" checked={settings.lateShiftWfh} onChange={(event)=>setSettings({...settings,lateShiftWfh:event.target.checked})} className="accent-orange-500" />Late shifts are WFH by default</label>
+                </div>
+                <Toggle label="Prepare daily tasks and breaks when a schedule is approved" checked={settings.autoPrepareDailyPlans} onChange={(value)=>setSettings({...settings,autoPrepareDailyPlans:value})} />
                 <div className="rounded-xl border border-blue-100 bg-blue-50 p-5 text-sm text-blue-800">
                   <b>Operating days and service hours are managed in Operations.</b>
                   <p className="mt-1 text-blue-700">The schedule automatically follows the active account hours configured there.</p>
@@ -439,22 +471,6 @@ export default function SettingsPage() {
                     ))}
                   </div>
                   <div className="mt-4 rounded-xl bg-emerald-50 p-4 text-sm text-emerald-800"><b>Total entitlement:</b> {settings.mainBreakMinutes + settings.shortBreakMinutes} minutes per working agent.</div>
-                  <label className="mt-5 flex gap-3 rounded-xl border border-slate-200 p-4">
-                    <input
-                      type="checkbox"
-                      checked={settings.requireAcknowledgement}
-                      onChange={(e) =>
-                        setSettings({
-                          ...settings,
-                          requireAcknowledgement: e.target.checked,
-                        })
-                      }
-                      className="accent-orange-500"
-                    />
-                    <span className="text-sm font-bold">
-                      Require Slack acknowledgement
-                    </span>
-                  </label>
                 </div>
               </div>
               <Footer saving={saving} onSave={saveSettings} />
@@ -542,6 +558,10 @@ export default function SettingsPage() {
                       setSettings({ ...settings, includeNotesInSlack: v })
                     }
                   />
+                </div>
+                <div className="grid gap-3 sm:grid-cols-2">
+                  <Toggle label="Require acknowledgement" checked={settings.requireAcknowledgement} onChange={(value)=>setSettings({...settings,requireAcknowledgement:value})} />
+                  <button type="button" disabled={testingSlack} onClick={testSlack} className="flex items-center justify-center gap-2 rounded-xl border border-slate-200 p-4 text-sm font-bold text-slate-700 hover:bg-slate-50">{testingSlack && <LoaderCircle className="h-4 w-4 animate-spin" />}{testingSlack ? "Testing connection…" : "Test Slack connection"}</button>
                 </div>
                 <div className="rounded-xl border border-blue-100 bg-blue-50 p-4 text-sm leading-6 text-blue-800"><b>Automated workflow</b><p>Approving a schedule prepares task ownership and coverage-safe breaks for every working day. At the daily posting time, the system checks today’s plan again, prepares it if needed, and then posts it to Slack.</p></div>
               </div>

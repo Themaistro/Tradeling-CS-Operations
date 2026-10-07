@@ -85,13 +85,13 @@ export async function POST(request: Request) {
   const operatingDays = targets.operatingDays;
   if (!operatingDays.length) return NextResponse.json({ error: "Add operating hours for at least one active account before generating a schedule." }, { status: 409 });
   const monthStart = new Date(Date.UTC(year, month - 1, 1));
-  const historyStart = new Date(monthStart); historyStart.setUTCDate(historyStart.getUTCDate() - 7);
+  const historyStart = new Date(monthStart); historyStart.setUTCDate(historyStart.getUTCDate() - settings.historyWindowDays);
   const [priorAssignments, openingHistory] = await Promise.all([
     prisma.shiftAssignment.findMany({ where: { date: { gte: historyStart, lt: monthStart }, status: "WORKING", employeeId: { in: employees.map((employee) => employee.id) }, schedulePeriod: { status: { in: ["APPROVED", "PUBLISHED"] } } }, select: { employeeId: true, date: true } }),
     prisma.openingHistory.findMany({ where: { date: { gte: historyStart, lt: monthStart }, status: "WORKING", employeeId: { in: employees.map((employee) => employee.id) } }, select: { employeeId: true, date: true } }),
   ]);
   const priorWorkingDates = Object.fromEntries(employees.map((employee) => [employee.id, [...new Set([...priorAssignments, ...openingHistory].filter((assignment) => assignment.employeeId === employee.id).map((assignment) => assignment.date.toISOString().slice(0, 10)))]]));
-  const generated = generateSchedule({ year, month, variationSeed: Date.now(), maxConsecutiveDays: settings.maxConsecutiveDays, operatingDays, weekStartsOn: settings.weekStartsOn, maxWeeklyDays: 5, priorWorkingDates, employees: employees.map(e => ({ id: e.id, name: e.name, preferredShiftId: e.preferredShiftId, isBilingual: e.isBilingual, accountIds: e.accountCapabilities.map((item) => item.accountId), dayOffPreferences: e.dayOffPreferences.map(d => ({ dayOfWeek: d.dayOfWeek, rank: d.rank })), timeOff: e.timeOff.map(t => ({ date: t.date.toISOString().slice(0, 10), type: t.type })) })), shifts: shifts.map(s => ({ id: s.id, name: s.name, startTime: s.startTime, minimumByDay: Object.fromEntries(operatingDays.map(day => [day, targets.staff.get(`${s.id}:${day}`) ?? 0])), bilingualByDay: Object.fromEntries(operatingDays.map(day => [day, targets.bilingual.get(`${s.id}:${day}`) ?? 0])), requiredAccountIdsByDay: Object.fromEntries(operatingDays.map(day => [day, targets.requiredAccounts.get(`${s.id}:${day}`) ?? []])) })) });
+  const generated = generateSchedule({ year, month, variationSeed: Date.now(), maxConsecutiveDays: settings.maxConsecutiveDays, operatingDays, weekStartsOn: settings.weekStartsOn, maxWeeklyDays: settings.maxWeeklyDays, priorWorkingDates, employees: employees.map(e => ({ id: e.id, name: e.name, preferredShiftId: e.preferredShiftId, isBilingual: e.isBilingual, accountIds: e.accountCapabilities.map((item) => item.accountId), dayOffPreferences: e.dayOffPreferences.map(d => ({ dayOfWeek: d.dayOfWeek, rank: d.rank })), timeOff: e.timeOff.map(t => ({ date: t.date.toISOString().slice(0, 10), type: t.type })) })), shifts: shifts.map(s => ({ id: s.id, name: s.name, startTime: s.startTime, minimumByDay: Object.fromEntries(operatingDays.map(day => [day, targets.staff.get(`${s.id}:${day}`) ?? 0])), bilingualByDay: Object.fromEntries(operatingDays.map(day => [day, targets.bilingual.get(`${s.id}:${day}`) ?? 0])), requiredAccountIdsByDay: Object.fromEntries(operatingDays.map(day => [day, targets.requiredAccounts.get(`${s.id}:${day}`) ?? []])) })) });
   const period = await prisma.$transaction(async tx => {
     const saved = await tx.schedulePeriod.upsert({ where: { year_month: { year, month } }, create: { year, month, generatedAt: new Date() }, update: { status: "DRAFT", generatedAt: new Date() } });
     const monthEnd = new Date(Date.UTC(year, month, 1));
@@ -101,7 +101,7 @@ export async function POST(request: Request) {
     await tx.shiftAssignment.createMany({ data: generated.assignments.map(a => {
       const shift = shifts.find((item) => item.id === a.shiftId);
       const weekday = new Date(`${a.date}T00:00:00.000Z`).getUTCDay();
-      const workLocation = a.status === "WORKING" && ([0, 5, 6].includes(weekday) || /late|night/i.test(shift?.name ?? "")) ? "WFH" : "OFFICE";
+      const workLocation = a.status === "WORKING" && (settings.wfhDays.includes(weekday) || (settings.lateShiftWfh && /late|night/i.test(shift?.name ?? ""))) ? "WFH" : "OFFICE";
       return { schedulePeriodId: saved.id, employeeId: a.employeeId, date: new Date(`${a.date}T00:00:00.000Z`), status: a.status, shiftId: a.shiftId, workLocation };
     }) });
     return saved;
@@ -145,6 +145,8 @@ export async function PATCH(request: Request) {
   }
   const period = await prisma.schedulePeriod.update({ where: { year_month: key }, data: { status, approvedAt: status === "APPROVED" ? new Date() : status === "DRAFT" ? null : undefined } });
   if (status !== "APPROVED") return NextResponse.json(period);
+  const approvalSettings = await prisma.appSettings.upsert({ where: { id: "global" }, create: { id: "global" }, update: {} });
+  if (!approvalSettings.autoPrepareDailyPlans) return NextResponse.json({ ...period, planning: { created: 0, existing: 0, failed: 0, skipped: true } });
   const dates = [...new Set(current.assignments.filter((assignment) => assignment.status === "WORKING").map((assignment) => assignment.date.toISOString().slice(0, 10)))].sort();
   const planning = { created: 0, existing: 0, failed: 0 };
   for (const date of dates) {

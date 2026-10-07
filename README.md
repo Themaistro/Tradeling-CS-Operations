@@ -40,6 +40,14 @@ The default local login is `admin` / `admin`. Change it before sharing the app w
 
 Before generating the first live roster, open **Schedule → Previous history**. Confirm each employee's final seven days, shift, and current focus task. The generator uses this handover to continue work streaks and task rotation instead of starting from an empty history. After the first approved period, the screen pre-fills from saved schedule data and normally requires only confirmation.
 
+## Settings ownership
+
+- **Scheduling** controls weekly work limits, history length, preparation day, and WFH defaults.
+- **Shifts** defines the available working periods. Account coverage remains in Operations.
+- **Breaks** controls the split-break entitlement and coverage spacing.
+- **Slack** controls delivery, message content, acknowledgement, and connection testing.
+- **Data & security** provides portable backups and explains which production secrets remain with the host.
+
 ## Run for development
 
 Requirements: Node.js 22.19 or newer and PostgreSQL 16 or newer.
