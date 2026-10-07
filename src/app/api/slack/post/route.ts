@@ -3,6 +3,24 @@ import type { Block, KnownBlock } from "@slack/types";
 import { prisma } from "@/lib/db/prisma";
 import { slackClient } from "@/lib/slack/client";
 import { taskEmoji } from "@/components/ui/task-icon";
+
+function formatTime(value?: string | null) {
+  if (!value) return "";
+  const [hoursValue, minutes = "00"] = value.split(":");
+  const hours = Number(hoursValue);
+  if (!Number.isFinite(hours)) return value;
+  const suffix = hours >= 12 ? "PM" : "AM";
+  const hour = hours % 12 || 12;
+  return `${hour}:${minutes} ${suffix}`;
+}
+
+function cleanTaskNote(value?: string | null) {
+  return value
+    ?.replace(/\s*[·|]\s*primary focus\s*$/i, "")
+    .replace(/\s*[·|]\s*secondary\s*$/i, "")
+    .trim();
+}
+
 export async function POST(request: Request) {
   const { date: dateValue } = await request.json();
   if (!/^\d{4}-\d{2}-\d{2}$/.test(dateValue || ""))
@@ -35,6 +53,7 @@ export async function POST(request: Request) {
     prisma.taskAssignment.findMany({
       where: { date },
       include: { category: true },
+      orderBy: [{ category: { order: "asc" } }, { priority: "asc" }],
     }),
     prisma.breakSchedule.findMany({ where: { date } }),
   ]);
@@ -49,17 +68,45 @@ export async function POST(request: Request) {
       { status: 400 },
     );
   const mention = (employeeId: string) => { const assignment = assignments.find((item) => item.employeeId === employeeId); return assignment?.employee.slackId ? `<@${assignment.employee.slackId}>` : `*${assignment?.employee.name ?? "Unassigned"}*`; };
-  const taskGroups = Map.groupBy(tasks, (task) => `${task.category.name}|${task.startTime ?? ""}|${task.endTime ?? ""}`);
-  const taskLines = [...taskGroups.values()].map((group) => {
+  const taskGroups = Map.groupBy(tasks, (task) => `${task.categoryId}|${task.startTime ?? ""}|${task.endTime ?? ""}`);
+  const formatTask = (group: (typeof tasks)[number][]) => {
     const task = group[0];
-    const people = group.map((item) => `${mention(item.employeeId)} P${item.priority}`).join(", ");
-    const period = task.startTime && task.endTime ? ` · ${task.startTime}–${task.endTime}` : "";
-    const context = settings.includeNotesInSlack && task.note ? ` _(${task.note})_` : "";
-    return `${taskEmoji(task.category.name)} *${task.category.name}*${period}: ${people}${context}`;
-  });
-  const shiftLine = assignments.map((assignment) => `${mention(assignment.employeeId)} · ${assignment.shift?.name ?? "Shift"} ${assignment.shift?.startTime ?? ""}–${assignment.shift?.endTime ?? ""}`).join("\n");
+    const people = group
+      .map((item) => `${mention(item.employeeId)} · P${item.priority}`)
+      .join("  •  ");
+    const period = task.startTime && task.endTime
+      ? ` · ${formatTime(task.startTime)}–${formatTime(task.endTime)}`
+      : "";
+    const note = settings.includeNotesInSlack ? cleanTaskNote(task.note) : "";
+    return `${taskEmoji(task.category.name)} *${task.category.name}*${period}\n${people}${note ? `\n_${note}_` : ""}`;
+  };
+  const groupedTasks = [...taskGroups.values()];
+  const primaryTaskLines = groupedTasks
+    .filter((group) => group[0].category.mode === "FOCUS")
+    .map(formatTask);
+  const supportingTaskLines = groupedTasks
+    .filter((group) => group[0].category.mode !== "FOCUS")
+    .map(formatTask);
+  const shiftGroups = Map.groupBy(assignments, (assignment) => assignment.shiftId ?? "unassigned");
+  const shiftLines = [...shiftGroups.values()]
+    .sort((left, right) => (left[0].shift?.order ?? 999) - (right[0].shift?.order ?? 999))
+    .map((group) => {
+      const shift = group[0].shift;
+      const startHour = Number(shift?.startTime?.split(":")[0] ?? 0);
+      const icon = startHour >= 12 ? "🌙" : "☀️";
+      const schedule = shift
+        ? `${formatTime(shift.startTime)}–${formatTime(shift.endTime)}`
+        : "Time not set";
+      const people = group
+        .map((item) => `${mention(item.employeeId)}${item.workLocation === "WFH" ? " _(WFH)_" : ""}`)
+        .join("  •  ");
+      return `*${icon} ${shift?.name ?? "Shift"} · ${schedule}*\n${people}`;
+    });
   const breakGroups = Map.groupBy(breaks.sort((left, right) => left.startTime.localeCompare(right.startTime)), (item) => `${item.type}|${item.startTime}|${item.endTime}`);
-  const breakLines = [...breakGroups.values()].map((group) => `• ${group[0].type === "MAIN" ? "Main" : "Short"} ${group[0].startTime}–${group[0].endTime}: ${group.map((item) => mention(item.employeeId)).join(", ")}`);
+  const breakLines = [...breakGroups.values()].map((group) => {
+    const label = group[0].type === "MAIN" ? "Main break" : "Short break";
+    return `• *${formatTime(group[0].startTime)}–${formatTime(group[0].endTime)}* · ${label}\n  ${group.map((item) => mention(item.employeeId)).join("  •  ")}`;
+  });
   try {
     const result = await client.chat.postMessage({
       channel: settings.slackChannelId,
@@ -73,12 +120,18 @@ export async function POST(request: Request) {
           type: "section",
           text: {
             type: "mrkdwn",
-            text: `*${new Intl.DateTimeFormat("en-AE", { timeZone: settings.timezone, weekday: "long", year: "numeric", month: "long", day: "numeric" }).format(date)}*`,
+            text: `📅 *${new Intl.DateTimeFormat("en-AE", { timeZone: settings.timezone, weekday: "long", year: "numeric", month: "long", day: "numeric" }).format(date)}*\nHere is today’s confirmed coverage and task ownership.`,
           },
         },
-        { type: "section", text: { type: "mrkdwn", text: `*Shift coverage*\n${shiftLine}` } },
         { type: "divider" },
-        { type: "section", text: { type: "mrkdwn", text: `*Task ownership*\n${taskLines.join("\n\n")}` } },
+        { type: "section", text: { type: "mrkdwn", text: `*Today’s coverage*\n\n${shiftLines.join("\n\n")}` } },
+        { type: "divider" },
+        ...(primaryTaskLines.length
+          ? [{ type: "section" as const, text: { type: "mrkdwn" as const, text: `*Primary assignments*\n_Focused ownership for today_\n\n${primaryTaskLines.join("\n\n")}` } }]
+          : []),
+        ...(supportingTaskLines.length
+          ? [{ type: "section" as const, text: { type: "mrkdwn" as const, text: `*Shared and supporting work*\n\n${supportingTaskLines.join("\n\n")}` } }]
+          : []),
         ...(settings.includeBreaksInSlack && breakLines.length ? [{ type: "divider" as const }, { type: "section" as const, text: { type: "mrkdwn" as const, text: `*Break plan*\n${breakLines.join("\n")}` } }] : []),
         ...(settings.requireAcknowledgement
           ? [
@@ -93,7 +146,6 @@ export async function POST(request: Request) {
                     },
                     action_id: "acknowledge_roster",
                     value: dateValue,
-                    style: "primary",
                   },
                 ],
               },
