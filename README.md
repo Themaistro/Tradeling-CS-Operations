@@ -18,6 +18,7 @@ This is a new application that brings together the strongest parts of the existi
 - Slack acknowledgement recording through Socket Mode
 - Live readiness, coverage, task, and Slack reporting
 - Excel roster downloads, with an optional daily-tasks sheet
+- A seven-day opening-history handover for the first transition or missing schedule history
 - Portable JSON backups
 - Single-administrator sign-in
 - PostgreSQL persistence
@@ -34,6 +35,10 @@ Docker starts both the application and its PostgreSQL database. Data is kept in 
 Port 3001 is used by default so this app can run beside the original Task Bot on port 3000. Set `APP_PORT` to use another port.
 
 The default local login is `admin` / `admin`. Change it before sharing the app with anyone.
+
+## First schedule transition
+
+Before generating the first live roster, open **Schedule → Previous history**. Confirm each employee's final seven days, shift, and current focus task. The generator uses this handover to continue work streaks and task rotation instead of starting from an empty history. After the first approved period, the screen pre-fills from saved schedule data and normally requires only confirmation.
 
 ## Run for development
 

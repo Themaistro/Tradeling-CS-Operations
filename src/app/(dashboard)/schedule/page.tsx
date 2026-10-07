@@ -1,7 +1,8 @@
 "use client";
 import { useEffect, useState } from "react";
-import { AlertTriangle, CalendarDays, CheckCircle2, ChevronLeft, ChevronRight, Download, LayoutGrid, List, LoaderCircle, LockOpen } from "lucide-react";
+import { AlertTriangle, CalendarDays, CheckCircle2, ChevronLeft, ChevronRight, Download, History, LayoutGrid, List, LoaderCircle, LockOpen } from "lucide-react";
 import { PageHeading } from "@/components/ui/page-heading";
+import { OpeningHistoryDialog } from "./opening-history-dialog";
 type Period = {
   status: string;
   warnings?: { date: string; shiftId: string; severity: string; code: string; message: string }[];
@@ -56,6 +57,7 @@ export default function SchedulePage() {
   const [view, setView] = useState<"cards" | "weekly">("cards");
   const [weekIndex, setWeekIndex] = useState(0);
   const [includeTasks, setIncludeTasks] = useState(false);
+  const [historyOpen, setHistoryOpen] = useState(false);
   const load = () =>
     fetch(`/api/schedule?year=${year}&month=${month}`)
       .then((r) => r.json())
@@ -232,6 +234,7 @@ export default function SchedulePage() {
           <button disabled={loading} onClick={reopen} className="flex items-center gap-2 rounded-xl border border-amber-300 bg-amber-50 px-5 py-3 font-bold text-amber-800"><LockOpen className="h-4 w-4" />Reopen for changes</button>
         )}
         {period && <span className={`inline-flex items-center rounded-xl px-4 py-3 text-xs font-bold ${period.status === "PUBLISHED" ? "bg-emerald-50 text-emerald-700" : period.status === "APPROVED" ? "bg-blue-50 text-blue-700" : "bg-slate-100 text-slate-600"}`}>Status: {period.status}</span>}
+        <button type="button" onClick={() => setHistoryOpen(true)} className="flex items-center gap-2 rounded-xl border border-slate-200 bg-white px-4 py-3 text-xs font-bold text-slate-700"><History className="h-4 w-4" />Previous history</button>
         {period && <div className="ml-auto flex flex-wrap items-center gap-3 rounded-xl border border-slate-200 bg-slate-50 px-3 py-2">
           <label className="flex items-center gap-2 text-xs font-semibold text-slate-600">
             <input type="checkbox" checked={includeTasks} onChange={(event) => setIncludeTasks(event.target.checked)} className="accent-orange-500" />
@@ -375,6 +378,7 @@ export default function SchedulePage() {
           </div>}
         </div>
       )}
+      {historyOpen && <OpeningHistoryDialog year={year} month={month} onClose={() => setHistoryOpen(false)} onSaved={() => setMessage("Previous history saved. The next schedule generation will continue from this handover.")} />}
     </div>
   );
 }

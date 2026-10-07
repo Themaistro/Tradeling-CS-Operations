@@ -18,7 +18,7 @@ export async function POST(request: Request) {
   const date = new Date(`${parsed.data.date}T00:00:00.000Z`);
   const weekday = date.getUTCDay();
   const historyStart = new Date(date); historyStart.setUTCDate(historyStart.getUTCDate() - 42);
-  const [assignments, categories, accounts, focusHistory, existingTasks, existingBreaks, settings] = await Promise.all([
+  const [assignments, categories, accounts, focusHistory, rotationBaselines, existingTasks, existingBreaks, settings] = await Promise.all([
     prisma.shiftAssignment.findMany({
       where: { date, status: "WORKING", schedulePeriod: { status: { in: ["APPROVED", "PUBLISHED"] } } },
       include: { employee: true, shift: { include: { staffingRules: { where: { dayOfWeek: weekday } } } } },
@@ -27,6 +27,7 @@ export async function POST(request: Request) {
     prisma.taskCategory.findMany({ where: { active: true }, orderBy: { order: "asc" } }),
     prisma.account.findMany({ where: { active: true }, include: { coverageRequirements: true, employeeCapabilities: true } }),
     prisma.taskAssignment.findMany({ where: { date: { gte: historyStart, lt: date }, category: { mode: "FOCUS" } }, include: { category: true }, orderBy: { date: "desc" } }),
+    prisma.rotationBaseline.findMany({ where: { effectiveDate: { lt: date } }, include: { taskCategory: true } }),
     prisma.taskAssignment.count({ where: { date } }),
     prisma.breakSchedule.count({ where: { date } }),
     prisma.appSettings.upsert({ where: { id: "global" }, create: { id: "global" }, update: {} }),
@@ -67,8 +68,10 @@ export async function POST(request: Request) {
       const continued = pool.find((assignment) => focusHistory.some((task) => task.employeeId === assignment.employeeId && task.date >= weekStart && normalizeQueue(task.category.name) === queueKey && task.startTime === queue.startTime));
       const expected = pool.find((assignment) => {
         const last = focusHistory.find((task) => task.employeeId === assignment.employeeId && task.date < weekStart && task.startTime === queue.startTime);
-        if (!last) return false;
-        const previousIndex = focusQueues.findIndex((item) => normalizeQueue(item.category.name) === normalizeQueue(last.category.name));
+        const baseline = rotationBaselines.find((item) => item.employeeId === assignment.employeeId)?.taskCategory;
+        const previousName = last?.category.name ?? baseline?.name;
+        if (!previousName) return false;
+        const previousIndex = focusQueues.findIndex((item) => normalizeQueue(item.category.name) === normalizeQueue(previousName));
         return previousIndex >= 0 && normalizeQueue(focusQueues[(previousIndex + 1) % focusQueues.length].category.name) === queueKey;
       });
       const assignment = continued ?? expected ?? pool.sort((left, right) => {

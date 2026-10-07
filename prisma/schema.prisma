@@ -76,6 +76,8 @@ model Employee {
   breaks              BreakSchedule[]
   acknowledgements    Acknowledgement[]
   accountCapabilities EmployeeAccountCapability[]
+  openingHistory      OpeningHistory[]
+  rotationBaseline    RotationBaseline?
   createdAt           DateTime                    @default(now())
   updatedAt           DateTime                    @updatedAt
 
@@ -93,6 +95,7 @@ model Shift {
   preferredEmployees Employee[]        @relation("PreferredShift")
   staffingRules      StaffingRule[]
   assignments        ShiftAssignment[]
+  openingHistory     OpeningHistory[]
   createdAt          DateTime          @default(now())
   updatedAt          DateTime          @updatedAt
 }
@@ -165,6 +168,22 @@ model ShiftAssignment {
   @@index([date, status])
 }
 
+model OpeningHistory {
+  id           String           @id @default(cuid())
+  employeeId   String
+  employee     Employee         @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+  date         DateTime         @db.Date
+  status       AssignmentStatus
+  shiftId      String?
+  shift        Shift?           @relation(fields: [shiftId], references: [id], onDelete: SetNull)
+  workLocation String           @default("OFFICE")
+  createdAt    DateTime         @default(now())
+  updatedAt    DateTime         @updatedAt
+
+  @@unique([employeeId, date])
+  @@index([date, status])
+}
+
 model TaskCategory {
   id              String           @id @default(cuid())
   name            String
@@ -180,8 +199,18 @@ model TaskCategory {
   defaultPriority Int              @default(2)
   rotationOrder   Int              @default(0)
   assignments     TaskAssignment[]
+  rotationBaselines RotationBaseline[]
   createdAt       DateTime         @default(now())
   updatedAt       DateTime         @updatedAt
+}
+
+model RotationBaseline {
+  employeeId     String        @id
+  employee       Employee      @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+  effectiveDate  DateTime      @db.Date
+  taskCategoryId String?
+  taskCategory   TaskCategory? @relation(fields: [taskCategoryId], references: [id], onDelete: SetNull)
+  updatedAt      DateTime      @updatedAt
 }
 
 model TaskAssignment {
