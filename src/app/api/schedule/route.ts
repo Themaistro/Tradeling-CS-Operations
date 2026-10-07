@@ -88,9 +88,12 @@ export async function POST(request: Request) {
   const historyStart = new Date(monthStart); historyStart.setUTCDate(historyStart.getUTCDate() - 7);
   const priorAssignments = await prisma.shiftAssignment.findMany({ where: { date: { gte: historyStart, lt: monthStart }, status: "WORKING", employeeId: { in: employees.map((employee) => employee.id) }, schedulePeriod: { status: { in: ["APPROVED", "PUBLISHED"] } } }, select: { employeeId: true, date: true } });
   const priorWorkingDates = Object.fromEntries(employees.map((employee) => [employee.id, priorAssignments.filter((assignment) => assignment.employeeId === employee.id).map((assignment) => assignment.date.toISOString().slice(0, 10))]));
-  const generated = generateSchedule({ year, month, variationSeed: Date.now(), maxConsecutiveDays: settings.maxConsecutiveDays, operatingDays, weekStartsOn: settings.weekStartsOn, maxWeeklyDays: 5, priorWorkingDates, employees: employees.map(e => ({ id: e.id, name: e.name, preferredShiftId: e.preferredShiftId, isBilingual: e.isBilingual, accountIds: e.accountCapabilities.map((item) => item.accountId), dayOffPreferences: e.dayOffPreferences.map(d => ({ dayOfWeek: d.dayOfWeek, rank: d.rank })), timeOff: e.timeOff.map(t => ({ date: t.date.toISOString().slice(0, 10), type: t.type })) })), shifts: shifts.map(s => ({ id: s.id, name: s.name, minimumByDay: Object.fromEntries(operatingDays.map(day => [day, targets.staff.get(`${s.id}:${day}`) ?? 0])), bilingualByDay: Object.fromEntries(operatingDays.map(day => [day, targets.bilingual.get(`${s.id}:${day}`) ?? 0])), requiredAccountIdsByDay: Object.fromEntries(operatingDays.map(day => [day, targets.requiredAccounts.get(`${s.id}:${day}`) ?? []])) })) });
+  const generated = generateSchedule({ year, month, variationSeed: Date.now(), maxConsecutiveDays: settings.maxConsecutiveDays, operatingDays, weekStartsOn: settings.weekStartsOn, maxWeeklyDays: 5, priorWorkingDates, employees: employees.map(e => ({ id: e.id, name: e.name, preferredShiftId: e.preferredShiftId, isBilingual: e.isBilingual, accountIds: e.accountCapabilities.map((item) => item.accountId), dayOffPreferences: e.dayOffPreferences.map(d => ({ dayOfWeek: d.dayOfWeek, rank: d.rank })), timeOff: e.timeOff.map(t => ({ date: t.date.toISOString().slice(0, 10), type: t.type })) })), shifts: shifts.map(s => ({ id: s.id, name: s.name, startTime: s.startTime, minimumByDay: Object.fromEntries(operatingDays.map(day => [day, targets.staff.get(`${s.id}:${day}`) ?? 0])), bilingualByDay: Object.fromEntries(operatingDays.map(day => [day, targets.bilingual.get(`${s.id}:${day}`) ?? 0])), requiredAccountIdsByDay: Object.fromEntries(operatingDays.map(day => [day, targets.requiredAccounts.get(`${s.id}:${day}`) ?? []])) })) });
   const period = await prisma.$transaction(async tx => {
     const saved = await tx.schedulePeriod.upsert({ where: { year_month: { year, month } }, create: { year, month, generatedAt: new Date() }, update: { status: "DRAFT", generatedAt: new Date() } });
+    const monthEnd = new Date(Date.UTC(year, month, 1));
+    await tx.taskAssignment.deleteMany({ where: { date: { gte: monthStart, lt: monthEnd } } });
+    await tx.breakSchedule.deleteMany({ where: { date: { gte: monthStart, lt: monthEnd } } });
     await tx.shiftAssignment.deleteMany({ where: { schedulePeriodId: saved.id } });
     await tx.shiftAssignment.createMany({ data: generated.assignments.map(a => {
       const shift = shifts.find((item) => item.id === a.shiftId);
@@ -138,5 +141,25 @@ export async function PATCH(request: Request) {
     if (shortages.length) return NextResponse.json({ error: "Coverage requirements are not met.", code: "COVERAGE_BLOCKED", shortages }, { status: 409 });
   }
   const period = await prisma.schedulePeriod.update({ where: { year_month: key }, data: { status, approvedAt: status === "APPROVED" ? new Date() : status === "DRAFT" ? null : undefined } });
-  return NextResponse.json(period);
+  if (status !== "APPROVED") return NextResponse.json(period);
+  const dates = [...new Set(current.assignments.filter((assignment) => assignment.status === "WORKING").map((assignment) => assignment.date.toISOString().slice(0, 10)))].sort();
+  const planning = { created: 0, existing: 0, failed: 0 };
+  for (const date of dates) {
+    try {
+      const response = await fetch(`http://127.0.0.1:${process.env.PORT || 3000}/api/daily/plan`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "x-internal-key": process.env.SESSION_SECRET || "", cookie: request.headers.get("cookie") || "" },
+        body: JSON.stringify({ date, replace: false }),
+      });
+      if (response.ok) planning.created += 1;
+      else {
+        const result = await response.json();
+        if (result.code === "PLAN_EXISTS") planning.existing += 1;
+        else planning.failed += 1;
+      }
+    } catch {
+      planning.failed += 1;
+    }
+  }
+  return NextResponse.json({ ...period, planning });
 }

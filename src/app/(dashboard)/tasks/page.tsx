@@ -129,6 +129,24 @@ export default function TasksPage() {
     setMessage(response.ok ? `Daily plan created: ${body.tasksCreated} task assignment(s) and ${body.breaksCreated} break(s).${body.warnings?.length ? ` ${body.warnings.join(" ")}` : ""}` : body.error);
     await load();
   }
+  async function prepareWeek() {
+    const dates = week.filter((item) => item.agents > 0).map((item) => item.date);
+    if (!dates.length) return;
+    setLoading(true);
+    const results: string[] = [];
+    for (const planDate of dates.sort()) {
+      const response = await fetch("/api/daily/plan", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ date: planDate, replace: false }) });
+      if (response.ok) { results.push("created"); continue; }
+      const result = await response.json();
+      results.push(result.code === "PLAN_EXISTS" ? "existing" : "failed");
+    }
+    const created = results.filter((result) => result === "created").length;
+    const existing = results.filter((result) => result === "existing").length;
+    const failed = results.filter((result) => result === "failed").length;
+    setMessage(`${created} daily plan${created === 1 ? "" : "s"} prepared${existing ? `; ${existing} existing plan${existing === 1 ? " was" : "s were"} kept` : ""}.${failed ? ` ${failed} day${failed === 1 ? " needs" : "s need"} review.` : ""}`);
+    await load();
+    setLoading(false);
+  }
   return (
     <div className="mx-auto max-w-7xl">
       <PageHeading
@@ -145,7 +163,8 @@ export default function TasksPage() {
           </div>
           <div className="flex items-center gap-3">
             <label className="relative"><CalendarDays className="pointer-events-none absolute left-3 top-3 h-4 w-4 text-slate-400" /><input aria-label="Choose operation date" type="date" value={date} onChange={(e) => setDate(e.target.value)} className="rounded-xl border border-slate-200 py-2.5 pl-10 pr-3 text-sm font-semibold" /></label>
-            <button type="button" disabled={loading || !data?.assignments.length} onClick={() => void buildPlan()} className="flex items-center gap-2 rounded-xl bg-violet-700 px-5 py-3 text-sm font-bold text-white disabled:cursor-not-allowed disabled:opacity-40"><Sparkles className="h-4 w-4" />Build daily plan</button>
+            <button type="button" disabled={loading || !week.some((item)=>item.agents>0)} onClick={() => void prepareWeek()} className="rounded-xl border border-violet-200 bg-violet-50 px-4 py-3 text-sm font-bold text-violet-700 disabled:opacity-40">Prepare week</button>
+            <button type="button" disabled={loading || !data?.assignments.length} onClick={() => void buildPlan()} className="flex items-center gap-2 rounded-xl bg-violet-700 px-5 py-3 text-sm font-bold text-white disabled:cursor-not-allowed disabled:opacity-40"><Sparkles className="h-4 w-4" />Build selected day</button>
           </div>
         </div>
         <div className="mt-5 grid grid-cols-2 gap-2 sm:grid-cols-4 lg:grid-cols-7">

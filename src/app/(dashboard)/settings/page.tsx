@@ -543,6 +543,7 @@ export default function SettingsPage() {
                     }
                   />
                 </div>
+                <div className="rounded-xl border border-blue-100 bg-blue-50 p-4 text-sm leading-6 text-blue-800"><b>Automated workflow</b><p>Approving a schedule prepares task ownership and coverage-safe breaks for every working day. At the daily posting time, the system checks today’s plan again, prepares it if needed, and then posts it to Slack.</p></div>
               </div>
               <Footer saving={saving} onSave={saveSettings} />
             </div>

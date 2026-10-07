@@ -11,6 +11,7 @@ export type ScheduleEmployee = {
 export type ScheduleShift = {
   id: string;
   name: string;
+  startTime: string;
   minimumByDay: Record<number, number>;
   bilingualByDay: Record<number, number>;
   requiredAccountIdsByDay: Record<number, string[]>;

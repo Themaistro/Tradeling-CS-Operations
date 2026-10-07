@@ -14,9 +14,9 @@ Tradeling CS Operations combines workforce scheduling and daily task coordinatio
 
 1. Team records define availability, shift preference, language coverage, and dated leave.
 2. The generator combines those records with weekday staffing rules and produces a draft schedule.
-3. Approval exposes only working employees to Daily Tasks.
-4. Daily task and break APIs independently verify that the employee is eligible for the selected date.
-5. The Slack worker publishes the approved roster manually or at the configured time.
+3. Approval exposes only working employees to Daily Tasks and prepares task ownership and coverage-safe breaks for every working date in the month.
+4. Daily task and break APIs independently verify that the employee is eligible for the selected date. A weekly batch action can safely fill missing plans without overwriting existing work.
+5. Before an automatic Slack post, the worker builds today’s plan if it is still missing, then publishes the approved roster at the configured time.
 6. Socket Mode acknowledgement clicks are written back to the same employee, category, and date.
 
 ## Design principles

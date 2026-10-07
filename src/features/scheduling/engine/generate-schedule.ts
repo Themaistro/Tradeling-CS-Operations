@@ -60,15 +60,23 @@ export function generateSchedule(input: Input) {
   const assignments: GeneratedAssignment[] = [];
   const warnings: ScheduleWarning[] = [];
   const workCount = new Map<string, number>();
+  const shiftCount = new Map<string, number>();
   const consecutive = new Map<string, number>();
   const weeklyCount = new Map<string, number>();
   const weeklyShift = new Map<string, string>();
   const weekStartsOn = input.weekStartsOn ?? 0;
+  const rotationOrder = [...input.employees].sort((left, right) => left.name.localeCompare(right.name));
+  const lateShift = [...input.shifts].sort((left, right) => right.startTime.localeCompare(left.startTime))[0];
   const consecutiveOffPlan = buildConsecutiveOffPlan(input);
   const weekKeyFor = (date: Date) => {
     const start = new Date(date);
     start.setDate(date.getDate() - ((date.getDay() - weekStartsOn + 7) % 7));
     return format(start, "yyyy-MM-dd");
+  };
+  const lateOwnerFor = (weekKey: string) => {
+    if (!rotationOrder.length) return null;
+    const weekNumber = Math.floor(new Date(`${weekKey}T12:00:00`).getTime() / 604800000);
+    return rotationOrder[((weekNumber % rotationOrder.length) + rotationOrder.length) % rotationOrder.length];
   };
   let currentWeek = weekKeyFor(first);
   const yesterday = new Date(first);
@@ -104,6 +112,7 @@ export function generateSchedule(input: Input) {
       const required = shift.minimumByDay[weekday] ?? 0;
       const bilingualRequired = shift.bilingualByDay[weekday] ?? 0;
       const requiredAccountIds = shift.requiredAccountIdsByDay[weekday] ?? [];
+      const lateOwner = shift.id === lateShift?.id ? lateOwnerFor(weekKey) : null;
       const eligibleCandidates = available
         .filter((employee) => !assigned.has(employee.id) && (consecutive.get(employee.id) ?? 0) < input.maxConsecutiveDays)
         .filter((employee) => (weeklyCount.get(employee.id) ?? 0) < (input.maxWeeklyDays ?? 5))
@@ -113,8 +122,8 @@ export function generateSchedule(input: Input) {
           const bDayOffRank = b.dayOffPreferences.find((item) => item.dayOfWeek === weekday)?.rank ?? 99;
           const aWeeklyShift = weeklyShift.get(a.id);
           const bWeeklyShift = weeklyShift.get(b.id);
-          const aScore = (a.preferredShiftId === shift.id ? 20 : 0) + (aWeeklyShift === shift.id ? 100 : aWeeklyShift ? -100 : 0) - (aDayOffRank === 1 ? 30 : aDayOffRank === 2 ? 15 : 0) - (workCount.get(a.id) ?? 0) * 2;
-          const bScore = (b.preferredShiftId === shift.id ? 20 : 0) + (bWeeklyShift === shift.id ? 100 : bWeeklyShift ? -100 : 0) - (bDayOffRank === 1 ? 30 : bDayOffRank === 2 ? 15 : 0) - (workCount.get(b.id) ?? 0) * 2;
+          const aScore = (a.id === lateOwner?.id ? 500 : 0) + (a.preferredShiftId === shift.id ? 20 : 0) + (aWeeklyShift === shift.id ? 100 : aWeeklyShift ? -100 : 0) - (aDayOffRank === 1 ? 30 : aDayOffRank === 2 ? 15 : 0) - (workCount.get(a.id) ?? 0) * 2 - (shiftCount.get(`${a.id}:${shift.id}`) ?? 0) * 10;
+          const bScore = (b.id === lateOwner?.id ? 500 : 0) + (b.preferredShiftId === shift.id ? 20 : 0) + (bWeeklyShift === shift.id ? 100 : bWeeklyShift ? -100 : 0) - (bDayOffRank === 1 ? 30 : bDayOffRank === 2 ? 15 : 0) - (workCount.get(b.id) ?? 0) * 2 - (shiftCount.get(`${b.id}:${shift.id}`) ?? 0) * 10;
           return bScore - aScore || variationRank(input.variationSeed ?? 0, `${dateKey}:${shift.id}:${a.id}`) - variationRank(input.variationSeed ?? 0, `${dateKey}:${shift.id}:${b.id}`);
         });
       const protectedRest = eligibleCandidates.filter((employee) => consecutiveOffPlan?.get(employee.id)?.has(weekday));
@@ -127,6 +136,7 @@ export function generateSchedule(input: Input) {
         assigned.add(employee.id);
         if (!weeklyShift.has(employee.id)) weeklyShift.set(employee.id, shift.id);
         workCount.set(employee.id, (workCount.get(employee.id) ?? 0) + 1);
+        shiftCount.set(`${employee.id}:${shift.id}`, (shiftCount.get(`${employee.id}:${shift.id}`) ?? 0) + 1);
         weeklyCount.set(employee.id, (weeklyCount.get(employee.id) ?? 0) + 1);
         assignments.push({ employeeId: employee.id, date: dateKey, status: "WORKING", shiftId: shift.id });
       });

@@ -84,7 +84,10 @@ export default function SchedulePage() {
       if (confirm(`${body.shortages.length} coverage issue(s) remain. Approve with an explicit coverage exception?`)) await approve(true);
       return;
     }
-    setMessage(r.ok ? "Schedule approved. The roster is now available in Daily Tasks." : body.error ?? "Could not approve the schedule.");
+    if (r.ok) {
+      const { created = 0, existing = 0, failed = 0 } = body.planning ?? {};
+      setMessage(`Schedule approved. ${created} daily plan${created === 1 ? "" : "s"} prepared${existing ? `; ${existing} existing plan${existing === 1 ? " was" : "s were"} kept` : ""}.${failed ? ` ${failed} day${failed === 1 ? " needs" : "s need"} review.` : " Daily Tasks is ready for the month."}`);
+    } else setMessage(body.error ?? "Could not approve the schedule.");
     await load();
     setLoading(false);
   }

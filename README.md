@@ -13,6 +13,8 @@ This is a new application that brings together the strongest parts of the existi
 - Manual schedule corrections with protected published history
 - Daily task assignments, notes, flexible breaks, and eligibility enforcement
 - Manual and scheduled Slack posting
+- Automatic daily-plan preparation when a monthly schedule is approved
+- Weekly batch preparation and a final automatic plan check before each Slack post
 - Slack acknowledgement recording through Socket Mode
 - Live readiness, coverage, task, and Slack reporting
 - Portable JSON backups

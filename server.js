@@ -64,6 +64,21 @@ app.prepare().then(async () => {
         })
       )
         return;
+      const planResponse = await fetch(`http://127.0.0.1:${port}/api/daily/plan`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "x-internal-key": process.env.SESSION_SECRET || "",
+        },
+        body: JSON.stringify({ date, replace: false }),
+      });
+      if (!planResponse.ok) {
+        const planResult = await planResponse.json().catch(() => ({}));
+        if (planResult.code !== "PLAN_EXISTS") {
+          console.error("Automated daily plan preparation failed", planResult.error || planResponse.statusText);
+          return;
+        }
+      }
       await fetch(`http://127.0.0.1:${port}/api/slack/post`, {
         method: "POST",
         headers: {
