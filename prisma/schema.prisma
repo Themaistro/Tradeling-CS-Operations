@@ -325,6 +325,8 @@ model AppSettings {
   automationEnabled       Boolean   @default(false)
   slackChannelId          String    @default("")
   slackMessageHeader      String    @default("Customer Service Daily Schedule")
+  slackBotTokenEncrypted  String?
+  slackAppTokenEncrypted  String?
   weekStartsOn            Int       @default(0)
   mainBreakMinutes        Int       @default(40)
   shortBreakMinutes       Int       @default(20)

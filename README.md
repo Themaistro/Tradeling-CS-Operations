@@ -64,12 +64,14 @@ Set `DATABASE_URL` in `.env` before running the database commands.
 
 ## Slack configuration
 
-Create a Slack app with Socket Mode enabled and provide these values through the hosting environment:
+Create a Slack app with Socket Mode enabled. An administrator can save these values in **Settings → Slack**:
 
 - `SLACK_BOT_TOKEN` (`xoxb-...`)
 - `SLACK_APP_TOKEN` (`xapp-...`)
 
-The bot needs `chat:write`, `channels:read`, `groups:read`, and `im:write`. Enable Interactivity and Socket Mode so acknowledgement buttons can be received. After changing scopes, reinstall the app to the workspace.
+The tokens are encrypted in the database using `SESSION_SECRET` and are never displayed again after saving. Hosting environment variables with the same names remain supported and take priority when present.
+
+The bot needs `chat:write`, `channels:read`, `groups:read`, and `im:write`. Enable Interactivity and Socket Mode so acknowledgement buttons can be received. After changing scopes, reinstall the app to the workspace. Restart the application after replacing the app-level token so the Socket Mode listener reconnects with the new credential.
 
 Never commit real tokens. If a token has been shared in chat or source control, revoke it in Slack and issue a replacement.
 

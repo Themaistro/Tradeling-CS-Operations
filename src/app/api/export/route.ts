@@ -6,5 +6,6 @@ export async function GET(){
     prisma.account.findMany({include:{operatingWindows:true,coverageRequirements:true,employeeCapabilities:true}}),
     prisma.shift.findMany(),prisma.staffingRule.findMany(),prisma.taskCategory.findMany(),prisma.appSettings.findUnique({where:{id:"global"}}),prisma.schedulePeriod.findMany({include:{assignments:true}}),prisma.taskAssignment.findMany(),prisma.breakSchedule.findMany(),prisma.acknowledgement.findMany(),prisma.slackPostLog.findMany(),prisma.openingHistory.findMany(),prisma.rotationBaseline.findMany(),
   ]);
-  return new NextResponse(JSON.stringify({exportedAt:new Date().toISOString(),employees,accounts,shifts,staffingRules,taskCategories,settings,schedulePeriods,taskAssignments,breakSchedules,acknowledgements,slackPostLogs,openingHistory,rotationBaselines},null,2),{headers:{"Content-Type":"application/json","Content-Disposition":`attachment; filename="tradeling-cs-operations-backup.json"`}});
+  const safeSettings=settings?Object.fromEntries(Object.entries(settings).filter(([key])=>!key.toLowerCase().includes("tokenencrypted"))):null;
+  return new NextResponse(JSON.stringify({exportedAt:new Date().toISOString(),employees,accounts,shifts,staffingRules,taskCategories,settings:safeSettings,schedulePeriods,taskAssignments,breakSchedules,acknowledgements,slackPostLogs,openingHistory,rotationBaselines},null,2),{headers:{"Content-Type":"application/json","Content-Disposition":`attachment; filename="tradeling-cs-operations-backup.json"`}});
 }

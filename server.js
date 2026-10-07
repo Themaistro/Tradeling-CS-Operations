@@ -6,12 +6,30 @@ const cron = require("node-cron");
 const { PrismaClient } = require("@prisma/client");
 const { WebClient } = require("@slack/web-api");
 const { SocketModeClient } = require("@slack/socket-mode");
+const { createDecipheriv, createHash } = require("crypto");
 require("dotenv").config();
 
 const port = Number(process.env.PORT || 3000);
 const app = next({ dev: process.env.NODE_ENV !== "production" });
 const handle = app.getRequestHandler();
 const prisma = new PrismaClient();
+
+function decryptStoredSecret(value) {
+  try {
+    if (!value) return null;
+    const secret = process.env.SESSION_SECRET;
+    if (!secret) return null;
+    const [iv, tag, encrypted] = value.split(".");
+    if (!iv || !tag || !encrypted) return null;
+    const key = createHash("sha256").update(secret).digest();
+    const decipher = createDecipheriv("aes-256-gcm", key, Buffer.from(iv, "base64url"));
+    decipher.setAuthTag(Buffer.from(tag, "base64url"));
+    return Buffer.concat([decipher.update(Buffer.from(encrypted, "base64url")), decipher.final()]).toString("utf8");
+  } catch (error) {
+    console.error("Stored Slack credential could not be decrypted", error.message);
+    return null;
+  }
+}
 
 app.prepare().then(async () => {
   createServer((req, res) => handle(req, res, parse(req.url, true))).listen(
@@ -92,11 +110,14 @@ app.prepare().then(async () => {
     }
   });
 
-  if (process.env.SLACK_APP_TOKEN && process.env.SLACK_BOT_TOKEN) {
+  const storedSlack = await prisma.appSettings.findUnique({ where: { id: "global" } });
+  const appToken = process.env.SLACK_APP_TOKEN || decryptStoredSecret(storedSlack?.slackAppTokenEncrypted);
+  const botToken = process.env.SLACK_BOT_TOKEN || decryptStoredSecret(storedSlack?.slackBotTokenEncrypted);
+  if (appToken && botToken) {
     const socket = new SocketModeClient({
-      appToken: process.env.SLACK_APP_TOKEN,
+      appToken,
     });
-    const slack = new WebClient(process.env.SLACK_BOT_TOKEN);
+    const slack = new WebClient(botToken);
     socket.on("interactive", async ({ body, ack }) => {
       await ack();
       const action = body.actions?.[0];

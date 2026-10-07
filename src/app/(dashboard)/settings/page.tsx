@@ -50,6 +50,7 @@ type Data = {
   settings: Settings;
   shifts: Shift[];
   slackConfigured: boolean;
+  slackCredentials: { botTokenConfigured: boolean; appTokenConfigured: boolean };
   readiness: { employees: number; accounts: number; shifts: number; ready: boolean };
 };
 type Tab = "general" | "shifts" | "tasks" | "slack" | "data";
@@ -67,6 +68,8 @@ export default function SettingsPage() {
   } | null>(null);
   const [saving, setSaving] = useState(false);
   const [testingSlack, setTestingSlack] = useState(false);
+  const [botToken, setBotToken] = useState("");
+  const [appToken, setAppToken] = useState("");
 
   async function load() {
     const response = await fetch("/api/settings");
@@ -158,6 +161,24 @@ export default function SettingsPage() {
     const result = await response.json();
     setNotice({ kind: result.connected ? "success" : "error", text: result.connected ? `Connected to ${result.team} as ${result.user}.` : result.error || "Slack connection failed." });
     setTestingSlack(false);
+  }
+
+  async function saveSlackCredentials() {
+    setSaving(true); setNotice(null);
+    const response = await fetch("/api/settings/slack-credentials", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ botToken, appToken }) });
+    const result = await response.json();
+    setNotice({ kind: response.ok ? "success" : "error", text: response.ok ? `Slack credentials saved securely.${result.restartRequired ? " Restart the application once to activate Socket Mode acknowledgements." : ""}` : result.error || "Slack credentials could not be saved." });
+    if (response.ok) { setBotToken(""); setAppToken(""); await load(); }
+    setSaving(false);
+  }
+
+  async function removeSlackCredentials() {
+    if (!confirm("Remove the Slack tokens saved in this application? Hosting environment tokens, if present, will remain active.")) return;
+    setSaving(true);
+    const response = await fetch("/api/settings/slack-credentials", { method: "DELETE" });
+    setNotice({ kind: response.ok ? "success" : "error", text: response.ok ? "Saved Slack credentials removed. Restart the application to stop the current Socket Mode connection." : "Saved Slack credentials could not be removed." });
+    if (response.ok) await load();
+    setSaving(false);
   }
 
   if (!data || !settings)
@@ -495,9 +516,22 @@ export default function SettingsPage() {
                   </p>
                   <p className="mt-1 text-sm">
                     {data.slackConfigured
-                      ? "The host has supplied the bot and app tokens."
-                      : "Your technical administrator must add the bot and app tokens to the hosting environment."}
+                      ? "The bot and app tokens are available. Use the connection test after saving the channel."
+                      : "Add the bot and app tokens below, then test the connection."}
                   </p>
+                </div>
+                <div className="rounded-2xl border border-slate-200 p-5">
+                  <h3 className="font-bold text-slate-900">Slack credentials</h3>
+                  <p className="mt-1 text-sm text-slate-500">Saved tokens are encrypted and are never displayed again. Leave a field empty to keep its existing value.</p>
+                  <div className="mt-4 grid gap-4 sm:grid-cols-2">
+                    <Label title="Bot user token" helper={data.slackCredentials.botTokenConfigured ? "Saved · enter a new xoxb token only to replace it" : "Required · starts with xoxb-"}>
+                      <input type="password" autoComplete="new-password" value={botToken} onChange={(event)=>setBotToken(event.target.value.trim())} placeholder={data.slackCredentials.botTokenConfigured ? "•••••••••••••••• saved" : "xoxb-…"} className={field} />
+                    </Label>
+                    <Label title="App-level token" helper={data.slackCredentials.appTokenConfigured ? "Saved · enter a new xapp token only to replace it" : "Required for Socket Mode · starts with xapp-"}>
+                      <input type="password" autoComplete="new-password" value={appToken} onChange={(event)=>setAppToken(event.target.value.trim())} placeholder={data.slackCredentials.appTokenConfigured ? "•••••••••••••••• saved" : "xapp-…"} className={field} />
+                    </Label>
+                  </div>
+                  <div className="mt-4 flex flex-wrap gap-3"><button type="button" disabled={saving || (!botToken && !appToken)} onClick={saveSlackCredentials} className="rounded-xl bg-slate-950 px-5 py-3 text-sm font-bold text-white disabled:opacity-40">Save credentials</button>{(data.slackCredentials.botTokenConfigured||data.slackCredentials.appTokenConfigured)&&<button type="button" disabled={saving} onClick={removeSlackCredentials} className="rounded-xl border border-red-200 px-5 py-3 text-sm font-bold text-red-700">Remove saved credentials</button>}</div>
                 </div>
                 <div className="grid gap-5 sm:grid-cols-2">
                   <Label title="Channel ID">

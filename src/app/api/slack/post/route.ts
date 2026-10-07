@@ -10,10 +10,10 @@ export async function POST(request: Request) {
       { error: "Select a valid date." },
       { status: 400 },
     );
-  const client = slackClient();
+  const client = await slackClient();
   if (!client)
     return NextResponse.json(
-      { error: "Slack bot token is not configured by the host." },
+      { error: "Slack bot token is not configured. Add it in Settings → Slack." },
       { status: 400 },
     );
   const date = new Date(`${dateValue}T00:00:00.000Z`);
