@@ -31,6 +31,12 @@ function decryptStoredSecret(value) {
   }
 }
 
+function minutesSinceMidnight(value) {
+  const [hours, minutes] = value.split(":").map(Number);
+  if (!Number.isInteger(hours) || !Number.isInteger(minutes)) return null;
+  return hours * 60 + minutes;
+}
+
 app.prepare().then(async () => {
   createServer((req, res) => handle(req, res, parse(req.url, true))).listen(
     port,
@@ -50,6 +56,7 @@ app.prepare().then(async () => {
         hour: "2-digit",
         minute: "2-digit",
         hour12: false,
+        hourCycle: "h23",
       }).format(now);
       const weekday = new Intl.DateTimeFormat("en-US", {
         timeZone: settings.timezone,
@@ -64,7 +71,14 @@ app.prepare().then(async () => {
         Fri: 5,
         Sat: 6,
       }[weekday];
-      if (time !== settings.postTime) return;
+      const currentMinute = minutesSinceMidnight(time);
+      const scheduledMinute = minutesSinceMidnight(settings.postTime);
+      if (
+        currentMinute === null ||
+        scheduledMinute === null ||
+        currentMinute < scheduledMinute
+      )
+        return;
       const activeOperatingWindow = await prisma.accountOperatingWindow.findFirst({
         where: { dayOfWeek: dayNumber, account: { active: true } },
       });
@@ -97,7 +111,7 @@ app.prepare().then(async () => {
           return;
         }
       }
-      await fetch(`http://127.0.0.1:${port}/api/slack/post`, {
+      const postResponse = await fetch(`http://127.0.0.1:${port}/api/slack/post`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -105,6 +119,13 @@ app.prepare().then(async () => {
         },
         body: JSON.stringify({ date }),
       });
+      if (!postResponse.ok) {
+        const postResult = await postResponse.json().catch(() => ({}));
+        console.error(
+          "Automated Slack post failed",
+          postResult.error || postResponse.statusText,
+        );
+      }
     } catch (error) {
       console.error("Automated Slack post failed", error);
     }
