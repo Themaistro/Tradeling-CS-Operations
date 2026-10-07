@@ -71,7 +71,7 @@ Create a Slack app with Socket Mode enabled. An administrator can save these val
 
 The tokens are encrypted in the database using `SESSION_SECRET` and are never displayed again after saving. Hosting environment variables with the same names remain supported and take priority when present.
 
-The bot needs `chat:write`, `channels:read`, `groups:read`, and `im:write`. Enable Interactivity and Socket Mode so acknowledgement buttons can be received. After changing scopes, reinstall the app to the workspace. Restart the application after replacing the app-level token so the Socket Mode listener reconnects with the new credential.
+The bot needs `chat:write`, `channels:read`, `groups:read`, and `im:write`. The `im:write` scope allows the daily posting action to send each scheduled agent a private briefing containing only that agent's shift, tasks, and breaks for the selected day. Enable Interactivity and Socket Mode so acknowledgement buttons can be received. After changing scopes, reinstall the app to the workspace. Restart the application after replacing the app-level token so the Socket Mode listener reconnects with the new credential.
 
 Never commit real tokens. If a token has been shared in chat or source control, revoke it in Slack and issue a replacement.
 

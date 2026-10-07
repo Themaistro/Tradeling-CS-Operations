@@ -162,7 +162,76 @@ export async function POST(request: Request) {
         postedAt: new Date(),
       },
     });
-    return NextResponse.json({ ok: true, ts: result.ts });
+    const directMessageResults = await Promise.all(
+      assignments.map(async (assignment) => {
+        if (!assignment.employee.slackId) {
+          return { employee: assignment.employee.name, status: "skipped" as const, error: "Slack member ID is missing." };
+        }
+
+        const personalTasks = tasks.filter((task) => task.employeeId === assignment.employeeId);
+        const personalBreaks = breaks
+          .filter((item) => item.employeeId === assignment.employeeId)
+          .sort((left, right) => left.startTime.localeCompare(right.startTime));
+        const taskText = personalTasks.length
+          ? personalTasks
+              .map((task) => {
+                const period = task.startTime && task.endTime
+                  ? ` · ${formatTime(task.startTime)}–${formatTime(task.endTime)}`
+                  : "";
+                const note = settings.includeNotesInSlack ? cleanTaskNote(task.note) : "";
+                return `• ${taskEmoji(task.category.name)} *${task.category.name}* · P${task.priority}${period}${note ? `\n  _${note}_` : ""}`;
+              })
+              .join("\n")
+          : "No tasks are assigned to you today.";
+        const breakText = personalBreaks.length
+          ? personalBreaks
+              .map((item) => `• *${formatTime(item.startTime)}–${formatTime(item.endTime)}* · ${item.type === "MAIN" ? "Main break" : "Short break"}`)
+              .join("\n")
+          : "No breaks are scheduled yet.";
+        const shift = assignment.shift;
+        const shiftText = shift
+          ? `${shift.name} · ${formatTime(shift.startTime)}–${formatTime(shift.endTime)}${assignment.workLocation === "WFH" ? " · WFH" : ""}`
+          : "Shift time is not set.";
+
+        try {
+          const conversation = await client.conversations.open({ users: assignment.employee.slackId });
+          if (!conversation.channel?.id) throw new Error("Slack did not return a direct-message channel.");
+          await client.chat.postMessage({
+            channel: conversation.channel.id,
+            text: `Your assignments for ${dateValue}`,
+            blocks: [
+              { type: "header", text: { type: "plain_text", text: "Your Daily Assignment" } },
+              { type: "section", text: { type: "mrkdwn", text: `Hi <@${assignment.employee.slackId}> — here is your plan for *${new Intl.DateTimeFormat("en-AE", { timeZone: settings.timezone, weekday: "long", month: "long", day: "numeric" }).format(date)}*.` } },
+              { type: "section", text: { type: "mrkdwn", text: `*Shift*\n${shiftText}` } },
+              { type: "divider" },
+              { type: "section", text: { type: "mrkdwn", text: `*Your tasks*\n${taskText}` } },
+              { type: "divider" },
+              { type: "section", text: { type: "mrkdwn", text: `*Your breaks*\n${breakText}` } },
+            ] as (KnownBlock | Block)[],
+          });
+          return { employee: assignment.employee.name, status: "sent" as const };
+        } catch (error) {
+          return {
+            employee: assignment.employee.name,
+            status: "failed" as const,
+            error: error instanceof Error ? error.message : "Direct message failed.",
+          };
+        }
+      }),
+    );
+    const sent = directMessageResults.filter((item) => item.status === "sent").length;
+    const failed = directMessageResults.filter((item) => item.status === "failed");
+    const skipped = directMessageResults.filter((item) => item.status === "skipped");
+    return NextResponse.json({
+      ok: true,
+      ts: result.ts,
+      directMessages: {
+        sent,
+        failed: failed.length,
+        skipped: skipped.length,
+        issues: [...failed, ...skipped],
+      },
+    });
   } catch (error) {
     const message =
       error instanceof Error ? error.message : "Slack post failed.";

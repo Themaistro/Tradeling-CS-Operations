@@ -46,9 +46,13 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       body: JSON.stringify({ date }),
     });
     const result = await response.json();
+    const directMessages = result.directMessages;
+    const deliverySummary = directMessages
+      ? ` ${directMessages.sent} personal briefing${directMessages.sent === 1 ? " was" : "s were"} delivered.${directMessages.failed || directMessages.skipped ? ` ${directMessages.failed + directMessages.skipped} could not be delivered; check those agents’ Slack member IDs and the bot’s im:write permission.` : ""}`
+      : "";
     alert(
       response.ok
-        ? "Today’s roster was posted to Slack."
+        ? `Today’s team briefing was posted to Slack.${deliverySummary}`
         : result.error || "Slack posting failed.",
     );
   }
