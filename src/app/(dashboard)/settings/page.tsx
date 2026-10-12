@@ -55,6 +55,18 @@ type Data = {
   shifts: Shift[];
   slackConfigured: boolean;
   slackCredentials: { botTokenConfigured: boolean; appTokenConfigured: boolean };
+  postingHistory: {
+    id: string;
+    scheduleDate: string;
+    channelId: string;
+    source: string;
+    postTime: string | null;
+    timezone: string | null;
+    status: string;
+    error: string | null;
+    postedAt: string | null;
+    createdAt: string;
+  }[];
   readiness: {
     employees: number;
     employeesWithSlack: number;
@@ -185,6 +197,94 @@ function PostCountdown({ settings }: { settings: Settings }) {
         <p className="font-mono text-2xl font-bold tracking-tight text-blue-700">{countdown}</p>
         <p className="text-xs font-semibold uppercase tracking-wider text-blue-500">hours · minutes · seconds</p>
       </div>
+    </div>
+  );
+}
+
+function formatAuditDate(value: string | null | undefined, timezone: string) {
+  if (!value) return "Not recorded";
+  return new Intl.DateTimeFormat("en-AE", {
+    timeZone: timezone,
+    weekday: "short",
+    month: "short",
+    day: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+    second: "2-digit",
+  }).format(new Date(value));
+}
+
+function formatScheduleDate(value: string, timezone: string) {
+  return new Intl.DateTimeFormat("en-AE", {
+    timeZone: timezone,
+    weekday: "short",
+    month: "short",
+    day: "numeric",
+  }).format(new Date(value));
+}
+
+function PostingHistoryPanel({ data, timezone }: { data: Data; timezone: string }) {
+  const latest = data.postingHistory[0];
+
+  return (
+    <div className="rounded-2xl border border-slate-200 bg-white p-5">
+      <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
+        <div>
+          <h3 className="font-bold text-slate-900">Posting history</h3>
+          <p className="mt-1 text-sm leading-6 text-slate-500">
+            Use this audit to confirm whether Slack was posted automatically or manually, and what posting time was saved at that moment.
+          </p>
+        </div>
+        {latest && (
+          <span
+            className={`rounded-full px-3 py-1 text-xs font-bold ${
+              latest.status === "SENT"
+                ? "bg-emerald-50 text-emerald-700"
+                : "bg-red-50 text-red-700"
+            }`}
+          >
+            Last: {latest.status}
+          </span>
+        )}
+      </div>
+      {!data.postingHistory.length ? (
+        <p className="mt-4 rounded-xl bg-slate-50 p-4 text-sm text-slate-500">
+          No Slack posts have been recorded yet.
+        </p>
+      ) : (
+        <div className="mt-4 overflow-hidden rounded-xl border border-slate-100">
+          {data.postingHistory.map((item) => (
+            <div key={item.id} className="grid gap-3 border-b border-slate-100 p-4 last:border-b-0 lg:grid-cols-[1.2fr_1fr_1fr]">
+              <div>
+                <p className="text-sm font-bold text-slate-900">
+                  {formatScheduleDate(item.scheduleDate, item.timezone || timezone)}
+                </p>
+                <p className="mt-1 text-xs text-slate-500">
+                  Channel {item.channelId}
+                </p>
+              </div>
+              <div>
+                <p className="text-xs font-bold uppercase tracking-wider text-slate-400">Sent at</p>
+                <p className="mt-1 text-sm font-semibold text-slate-800">
+                  {formatAuditDate(item.postedAt || item.createdAt, item.timezone || timezone)}
+                </p>
+              </div>
+              <div className="flex flex-wrap items-center gap-2">
+                <span className={`rounded-full px-2.5 py-1 text-xs font-bold ${item.source === "AUTOMATIC" ? "bg-blue-50 text-blue-700" : "bg-slate-100 text-slate-700"}`}>
+                  {item.source === "AUTOMATIC" ? "Automatic" : "Manual"}
+                </span>
+                <span className="rounded-full bg-slate-100 px-2.5 py-1 text-xs font-bold text-slate-600">
+                  Scheduled {item.postTime || "not saved"}
+                </span>
+                <span className={`rounded-full px-2.5 py-1 text-xs font-bold ${item.status === "SENT" ? "bg-emerald-50 text-emerald-700" : "bg-red-50 text-red-700"}`}>
+                  {item.status}
+                </span>
+                {item.error && <p className="basis-full text-xs text-red-600">{item.error}</p>}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   );
 }
@@ -775,6 +875,7 @@ export default function SettingsPage() {
                   <button type="button" disabled={testingSlack} onClick={testSlack} className="flex items-center justify-center gap-2 rounded-xl border border-slate-200 p-4 text-sm font-bold text-slate-700 hover:bg-slate-50">{testingSlack && <LoaderCircle className="h-4 w-4 animate-spin" />}{testingSlack ? "Testing connection…" : "Test Slack connection"}</button>
                 </div>
                 <PostCountdown settings={settings} />
+                <PostingHistoryPanel data={data} timezone={settings.timezone} />
                 <div className="rounded-xl border border-blue-100 bg-blue-50 p-4 text-sm leading-6 text-blue-800"><b>Automated workflow</b><p>Approving a schedule prepares task ownership and coverage-safe breaks for every working day. At the daily posting time, the system checks today’s plan again, prepares it if needed, and then posts it to Slack.</p></div>
               </div>
               <Footer saving={saving} onSave={saveSettings} />

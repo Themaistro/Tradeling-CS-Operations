@@ -117,7 +117,7 @@ app.prepare().then(async () => {
           "Content-Type": "application/json",
           "x-internal-key": process.env.SESSION_SECRET || "",
         },
-        body: JSON.stringify({ date }),
+        body: JSON.stringify({ date, source: "AUTOMATIC" }),
       });
       if (!postResponse.ok) {
         const postResult = await postResponse.json().catch(() => ({}));

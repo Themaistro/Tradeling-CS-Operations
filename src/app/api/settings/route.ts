@@ -3,7 +3,7 @@ import { z } from "zod";
 import { prisma } from "@/lib/db/prisma";
 
 export async function GET() {
-  const [settings, shifts, employees, employeesWithSlack, employeesWithAccounts, accounts, operatingWindows, coverageRequirements, tasks, staffingRules, approvedSchedules] = await Promise.all([
+  const [settings, shifts, employees, employeesWithSlack, employeesWithAccounts, accounts, operatingWindows, coverageRequirements, tasks, staffingRules, approvedSchedules, postingHistory] = await Promise.all([
     prisma.appSettings.upsert({ where: { id: "global" }, create: { id: "global" }, update: {} }),
     prisma.shift.findMany({ where: { active: true }, orderBy: { order: "asc" } }),
     prisma.employee.count({ where: { status: "ACTIVE" } }),
@@ -15,6 +15,22 @@ export async function GET() {
     prisma.taskCategory.count({ where: { active: true, account: { active: true } } }),
     prisma.staffingRule.count({ where: { shift: { active: true } } }),
     prisma.schedulePeriod.count({ where: { status: { in: ["APPROVED", "PUBLISHED"] } } }),
+    prisma.slackPostLog.findMany({
+      orderBy: { createdAt: "desc" },
+      take: 8,
+      select: {
+        id: true,
+        scheduleDate: true,
+        channelId: true,
+        source: true,
+        postTime: true,
+        timezone: true,
+        status: true,
+        error: true,
+        postedAt: true,
+        createdAt: true,
+      },
+    }),
   ]);
   const botTokenConfigured = Boolean(process.env.SLACK_BOT_TOKEN || settings.slackBotTokenEncrypted);
   const appTokenConfigured = Boolean(process.env.SLACK_APP_TOKEN || settings.slackAppTokenEncrypted);
@@ -26,6 +42,7 @@ export async function GET() {
     shifts,
     slackConfigured,
     slackCredentials: { botTokenConfigured, appTokenConfigured },
+    postingHistory,
     readiness: {
       employees,
       employeesWithSlack,

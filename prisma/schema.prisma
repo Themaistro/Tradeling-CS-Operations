@@ -310,6 +310,9 @@ model SlackPostLog {
   scheduleDate DateTime        @db.Date
   channelId    String
   messageTs    String?
+  source       String          @default("MANUAL")
+  postTime     String?
+  timezone     String?
   status       SlackPostStatus @default(PENDING)
   error        String?
   postedAt     DateTime?

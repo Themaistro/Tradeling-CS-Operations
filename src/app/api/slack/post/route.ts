@@ -22,7 +22,8 @@ function cleanTaskNote(value?: string | null) {
 }
 
 export async function POST(request: Request) {
-  const { date: dateValue } = await request.json();
+  const { date: dateValue, source: sourceValue } = await request.json();
+  const source = sourceValue === "AUTOMATIC" ? "AUTOMATIC" : "MANUAL";
   if (!/^\d{4}-\d{2}-\d{2}$/.test(dateValue || ""))
     return NextResponse.json(
       { error: "Select a valid date." },
@@ -158,6 +159,9 @@ export async function POST(request: Request) {
         scheduleDate: date,
         channelId: settings.slackChannelId,
         messageTs: result.ts,
+        source,
+        postTime: settings.postTime,
+        timezone: settings.timezone,
         status: "SENT",
         postedAt: new Date(),
       },
@@ -239,6 +243,9 @@ export async function POST(request: Request) {
       data: {
         scheduleDate: date,
         channelId: settings.slackChannelId,
+        source,
+        postTime: settings.postTime,
+        timezone: settings.timezone,
         status: "FAILED",
         error: message,
       },
