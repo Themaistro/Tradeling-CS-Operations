@@ -31,3 +31,9 @@ export type ScheduleWarning = {
   code: "STAFF_SHORTAGE" | "BILINGUAL_SHORTAGE" | "REST_PATTERN_OVERRIDE";
   message: string;
 };
+
+export type PriorScheduleEntry = {
+  date: string;
+  status: GeneratedAssignment["status"];
+  shiftId: string | null;
+};

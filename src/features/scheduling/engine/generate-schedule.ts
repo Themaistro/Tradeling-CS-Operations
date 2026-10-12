@@ -1,5 +1,5 @@
 import { eachDayOfInterval, endOfMonth, format, startOfMonth } from "date-fns";
-import type { GeneratedAssignment, ScheduleEmployee, ScheduleShift, ScheduleWarning } from "../types";
+import type { GeneratedAssignment, PriorScheduleEntry, ScheduleEmployee, ScheduleShift, ScheduleWarning } from "../types";
 
 type Input = {
   year: number;
@@ -10,7 +10,7 @@ type Input = {
   operatingDays: number[];
   maxWeeklyDays?: number;
   weekStartsOn?: number;
-  priorWorkingDates?: Record<string, string[]>;
+  priorAssignments?: Record<string, PriorScheduleEntry[]>;
   variationSeed?: number;
 };
 
@@ -56,6 +56,10 @@ function leaveStatus(type: ScheduleEmployee["timeOff"][number]["type"]): Generat
   return type;
 }
 
+function isWorking(status: GeneratedAssignment["status"]) {
+  return status === "WORKING";
+}
+
 export function generateSchedule(input: Input) {
   const first = startOfMonth(new Date(input.year, input.month - 1, 1));
   const days = eachDayOfInterval({ start: first, end: endOfMonth(first) });
@@ -64,35 +68,62 @@ export function generateSchedule(input: Input) {
   const workCount = new Map<string, number>();
   const shiftCount = new Map<string, number>();
   const consecutive = new Map<string, number>();
+  const requiredRecoveryDays = new Map<string, number>();
   const weeklyCount = new Map<string, number>();
   const weeklyShift = new Map<string, string>();
   const weekStartsOn = input.weekStartsOn ?? 0;
   const rotationOrder = [...input.employees].sort((left, right) => left.name.localeCompare(right.name));
   const lateShift = [...input.shifts].sort((left, right) => right.startTime.localeCompare(left.startTime))[0];
   const consecutiveOffPlan = buildConsecutiveOffPlan(input);
+  const lateCount = new Map<string, number>();
+  const weekendLateCount = new Map<string, number>();
+  const lateOwnerByWeek = new Map<string, ScheduleEmployee | null>();
   const weekKeyFor = (date: Date) => {
     const start = new Date(date);
     start.setDate(date.getDate() - ((date.getDay() - weekStartsOn + 7) % 7));
     return format(start, "yyyy-MM-dd");
   };
-  const lateOwnerFor = (weekKey: string) => {
-    if (!rotationOrder.length) return null;
-    const weekNumber = Math.floor(new Date(`${weekKey}T12:00:00`).getTime() / 604800000);
-    return rotationOrder[((weekNumber % rotationOrder.length) + rotationOrder.length) % rotationOrder.length];
+  const lateOwnerFor = (weekKey: string, requiredAccountIds: string[]) => {
+    if (lateOwnerByWeek.has(weekKey)) return lateOwnerByWeek.get(weekKey) ?? null;
+    const eligible = rotationOrder.filter((employee) => requiredAccountIds.every((accountId) => employee.accountIds.includes(accountId)));
+    const candidates = eligible.length ? eligible : rotationOrder;
+    const owner = [...candidates].sort((a, b) => {
+      const aScore = (lateCount.get(a.id) ?? 0) * 100 + (weekendLateCount.get(a.id) ?? 0) * 35 + (workCount.get(a.id) ?? 0) * 2;
+      const bScore = (lateCount.get(b.id) ?? 0) * 100 + (weekendLateCount.get(b.id) ?? 0) * 35 + (workCount.get(b.id) ?? 0) * 2;
+      return aScore - bScore || variationRank(input.variationSeed ?? 0, `${weekKey}:${a.id}`) - variationRank(input.variationSeed ?? 0, `${weekKey}:${b.id}`);
+    })[0] ?? null;
+    lateOwnerByWeek.set(weekKey, owner);
+    return owner;
   };
   let currentWeek = weekKeyFor(first);
   const yesterday = new Date(first);
   yesterday.setDate(first.getDate() - 1);
   for (const employee of input.employees) {
-    const worked = new Set(input.priorWorkingDates?.[employee.id] ?? []);
+    const history = new Map((input.priorAssignments?.[employee.id] ?? []).map((entry) => [entry.date, entry]));
     const cursor = new Date(yesterday);
     let run = 0;
-    while (worked.has(format(cursor, "yyyy-MM-dd"))) {
+    while (history.get(format(cursor, "yyyy-MM-dd")) && isWorking(history.get(format(cursor, "yyyy-MM-dd"))!.status)) {
       run += 1;
       cursor.setDate(cursor.getDate() - 1);
     }
     consecutive.set(employee.id, run);
-    weeklyCount.set(employee.id, [...worked].filter((date) => weekKeyFor(new Date(`${date}T12:00:00`)) === currentWeek).length);
+    weeklyCount.set(employee.id, [...history.values()].filter((entry) => isWorking(entry.status) && weekKeyFor(new Date(`${entry.date}T12:00:00`)) === currentWeek).length);
+    const priorLate = [...history.values()].filter((entry) => entry.status === "WORKING" && entry.shiftId === lateShift?.id);
+    lateCount.set(employee.id, priorLate.length);
+    weekendLateCount.set(employee.id, priorLate.filter((entry) => [0, 6].includes(new Date(`${entry.date}T12:00:00`).getDay())).length);
+
+    let recoveryCursor = new Date(yesterday);
+    let recoveryDaysTaken = 0;
+    while (history.get(format(recoveryCursor, "yyyy-MM-dd")) && !isWorking(history.get(format(recoveryCursor, "yyyy-MM-dd"))!.status)) {
+      recoveryDaysTaken += 1;
+      recoveryCursor.setDate(recoveryCursor.getDate() - 1);
+    }
+    let precedingWorkRun = 0;
+    while (history.get(format(recoveryCursor, "yyyy-MM-dd")) && isWorking(history.get(format(recoveryCursor, "yyyy-MM-dd"))!.status)) {
+      precedingWorkRun += 1;
+      recoveryCursor.setDate(recoveryCursor.getDate() - 1);
+    }
+    requiredRecoveryDays.set(employee.id, precedingWorkRun >= input.maxConsecutiveDays ? Math.max(0, 2 - recoveryDaysTaken) : run >= input.maxConsecutiveDays ? 2 : 0);
   }
 
   for (const date of days) {
@@ -114,7 +145,7 @@ export function generateSchedule(input: Input) {
       const required = shift.minimumByDay[weekday] ?? 0;
       const bilingualRequired = shift.bilingualByDay[weekday] ?? 0;
       const requiredAccountIds = shift.requiredAccountIdsByDay[weekday] ?? [];
-      const lateOwner = shift.id === lateShift?.id ? lateOwnerFor(weekKey) : null;
+      const lateOwner = shift.id === lateShift?.id ? lateOwnerFor(weekKey, requiredAccountIds) : null;
       const eligibleCandidates = available
         .filter((employee) => !assigned.has(employee.id) && (consecutive.get(employee.id) ?? 0) < input.maxConsecutiveDays)
         .filter((employee) => (weeklyCount.get(employee.id) ?? 0) < (input.maxWeeklyDays ?? 5))
@@ -124,12 +155,14 @@ export function generateSchedule(input: Input) {
           const bDayOffRank = b.dayOffPreferences.find((item) => item.dayOfWeek === weekday)?.rank ?? 99;
           const aWeeklyShift = weeklyShift.get(a.id);
           const bWeeklyShift = weeklyShift.get(b.id);
-          const aScore = (a.id === lateOwner?.id ? 500 : 0) + (a.preferredShiftId === shift.id ? 20 : 0) + (aWeeklyShift === shift.id ? 100 : aWeeklyShift ? -100 : 0) - (aDayOffRank === 1 ? 30 : aDayOffRank === 2 ? 15 : 0) - (workCount.get(a.id) ?? 0) * 2 - (shiftCount.get(`${a.id}:${shift.id}`) ?? 0) * 10;
-          const bScore = (b.id === lateOwner?.id ? 500 : 0) + (b.preferredShiftId === shift.id ? 20 : 0) + (bWeeklyShift === shift.id ? 100 : bWeeklyShift ? -100 : 0) - (bDayOffRank === 1 ? 30 : bDayOffRank === 2 ? 15 : 0) - (workCount.get(b.id) ?? 0) * 2 - (shiftCount.get(`${b.id}:${shift.id}`) ?? 0) * 10;
+          const aLatePenalty = shift.id === lateShift?.id ? (lateCount.get(a.id) ?? 0) * 50 + (weekendLateCount.get(a.id) ?? 0) * 20 : 0;
+          const bLatePenalty = shift.id === lateShift?.id ? (lateCount.get(b.id) ?? 0) * 50 + (weekendLateCount.get(b.id) ?? 0) * 20 : 0;
+          const aScore = (a.id === lateOwner?.id ? 500 : 0) + (a.preferredShiftId === shift.id ? 20 : 0) + (aWeeklyShift === shift.id ? 100 : aWeeklyShift ? -100 : 0) - (aDayOffRank === 1 ? 30 : aDayOffRank === 2 ? 15 : 0) - (workCount.get(a.id) ?? 0) * 2 - (shiftCount.get(`${a.id}:${shift.id}`) ?? 0) * 10 - aLatePenalty;
+          const bScore = (b.id === lateOwner?.id ? 500 : 0) + (b.preferredShiftId === shift.id ? 20 : 0) + (bWeeklyShift === shift.id ? 100 : bWeeklyShift ? -100 : 0) - (bDayOffRank === 1 ? 30 : bDayOffRank === 2 ? 15 : 0) - (workCount.get(b.id) ?? 0) * 2 - (shiftCount.get(`${b.id}:${shift.id}`) ?? 0) * 10 - bLatePenalty;
           return bScore - aScore || variationRank(input.variationSeed ?? 0, `${dateKey}:${shift.id}:${a.id}`) - variationRank(input.variationSeed ?? 0, `${dateKey}:${shift.id}:${b.id}`);
         });
-      const protectedRest = eligibleCandidates.filter((employee) => consecutiveOffPlan?.get(employee.id)?.has(weekday));
-      const candidates = [...eligibleCandidates.filter((employee) => !consecutiveOffPlan?.get(employee.id)?.has(weekday)), ...protectedRest];
+      const protectedRest = eligibleCandidates.filter((employee) => consecutiveOffPlan?.get(employee.id)?.has(weekday) || (requiredRecoveryDays.get(employee.id) ?? 0) > 0);
+      const candidates = [...eligibleCandidates.filter((employee) => !protectedRest.some((resting) => resting.id === employee.id)), ...protectedRest];
       const bilingual = candidates.filter((employee) => employee.isBilingual).slice(0, bilingualRequired);
       const selected = [...bilingual, ...candidates.filter((employee) => !bilingual.some((chosen) => chosen.id === employee.id)).slice(0, Math.max(0, required - bilingual.length))];
       const restOverrides = selected.filter((employee) => protectedRest.some((resting) => resting.id === employee.id));
@@ -140,6 +173,10 @@ export function generateSchedule(input: Input) {
         workCount.set(employee.id, (workCount.get(employee.id) ?? 0) + 1);
         shiftCount.set(`${employee.id}:${shift.id}`, (shiftCount.get(`${employee.id}:${shift.id}`) ?? 0) + 1);
         weeklyCount.set(employee.id, (weeklyCount.get(employee.id) ?? 0) + 1);
+        if (shift.id === lateShift?.id) {
+          lateCount.set(employee.id, (lateCount.get(employee.id) ?? 0) + 1);
+          if ([0, 6].includes(weekday)) weekendLateCount.set(employee.id, (weekendLateCount.get(employee.id) ?? 0) + 1);
+        }
         assignments.push({ employeeId: employee.id, date: dateKey, status: "WORKING", shiftId: shift.id });
       });
       if (selected.length < required) warnings.push({ date: dateKey, shiftId: shift.id, severity: "critical", code: "STAFF_SHORTAGE", message: `${shift.name} needs ${required - selected.length} more team member(s).` });
@@ -147,9 +184,14 @@ export function generateSchedule(input: Input) {
     }
 
     for (const employee of input.employees) {
-      if (assigned.has(employee.id)) consecutive.set(employee.id, (consecutive.get(employee.id) ?? 0) + 1);
+      if (assigned.has(employee.id)) {
+        const run = (consecutive.get(employee.id) ?? 0) + 1;
+        consecutive.set(employee.id, run);
+        requiredRecoveryDays.set(employee.id, run >= input.maxConsecutiveDays ? 2 : 0);
+      }
       else {
         consecutive.set(employee.id, 0);
+        requiredRecoveryDays.set(employee.id, Math.max(0, (requiredRecoveryDays.get(employee.id) ?? 0) - 1));
         const leave = leaves.get(employee.id);
         assignments.push({ employeeId: employee.id, date: dateKey, status: leave ? leaveStatus(leave.type) : "OFF", shiftId: null });
       }
