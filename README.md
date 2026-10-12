@@ -77,7 +77,7 @@ Never commit real tokens. If a token has been shared in chat or source control, 
 
 ## Weekly operational audit
 
-After generating and approving a schedule, run `npm run audit:week -- YYYY-MM-DD` with the Monday date to validate one complete week. The audit checks account and late-shift coverage, five working days, consecutive days off, Calls and focus-task ownership, break duration and cover, WFH rules, leave handling, and Slack member IDs. It does not send Slack messages.
+After generating and approving a schedule, run `npm run audit:week -- YYYY-MM-DD` with the Monday date to validate one complete week. If you are using Docker, run `docker compose exec app npm run audit:week -- YYYY-MM-DD` instead. The audit checks account and late-shift coverage, five working days, consecutive days off, Calls and focus-task ownership, break duration and cover, WFH rules, leave handling, and Slack member IDs. It does not send Slack messages.
 
 ## Deployment
 

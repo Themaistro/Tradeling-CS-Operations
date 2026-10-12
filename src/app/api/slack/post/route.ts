@@ -22,9 +22,20 @@ function cleanTaskNote(value?: string | null) {
 }
 
 export async function POST(request: Request) {
-  const { date: dateValue, source: sourceValue } = await request.json();
+  const { date: requestedDate, source: sourceValue } = await request.json();
   const source = sourceValue === "AUTOMATIC" ? "AUTOMATIC" : "MANUAL";
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(dateValue || ""))
+  const settings = await prisma.appSettings.upsert({
+    where: { id: "global" },
+    create: { id: "global" },
+    update: {},
+  });
+  const dateValue = requestedDate || new Intl.DateTimeFormat("en-CA", {
+    timeZone: settings.timezone,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).format(new Date());
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(dateValue))
     return NextResponse.json(
       { error: "Select a valid date." },
       { status: 400 },
@@ -36,27 +47,23 @@ export async function POST(request: Request) {
       { status: 400 },
     );
   const date = new Date(`${dateValue}T00:00:00.000Z`);
-  const [settings, assignments, tasks, breaks] = await Promise.all([
-    prisma.appSettings.upsert({
-      where: { id: "global" },
-      create: { id: "global" },
-      update: {},
-    }),
+  const [assignments, tasks, breaks] = await Promise.all([
     prisma.shiftAssignment.findMany({
       where: {
         date,
         status: "WORKING",
+        employee: { status: "ACTIVE" },
         schedulePeriod: { status: { in: ["APPROVED", "PUBLISHED"] } },
       },
       include: { employee: true, shift: true },
       orderBy: { employee: { name: "asc" } },
     }),
     prisma.taskAssignment.findMany({
-      where: { date },
+      where: { date, employee: { status: "ACTIVE" } },
       include: { category: true },
       orderBy: [{ category: { order: "asc" } }, { priority: "asc" }],
     }),
-    prisma.breakSchedule.findMany({ where: { date } }),
+    prisma.breakSchedule.findMany({ where: { date, employee: { status: "ACTIVE" } } }),
   ]);
   if (!settings.slackChannelId)
     return NextResponse.json(
@@ -79,7 +86,7 @@ export async function POST(request: Request) {
       ? ` · ${formatTime(task.startTime)}–${formatTime(task.endTime)}`
       : "";
     const note = settings.includeNotesInSlack ? cleanTaskNote(task.note) : "";
-    return `${taskEmoji(task.category.name)} *${task.category.name}*${period}\n${people}${note ? `\n_${note}_` : ""}`;
+    return `${taskEmoji(task.category.name, task.category.icon)} *${task.category.name}*${period}\n${people}${note ? `\n_${note}_` : ""}`;
   };
   const groupedTasks = [...taskGroups.values()];
   const primaryTaskLines = groupedTasks
@@ -103,6 +110,13 @@ export async function POST(request: Request) {
         .join("  •  ");
       return `*${icon} ${shift?.name ?? "Shift"} · ${schedule}*\n${people}`;
     });
+  const sharedCoverageGroups = Map.groupBy(tasks.filter((task) => task.note?.includes("shared coverage")), (task) => task.employeeId);
+  const sharedCoverageLines = [...sharedCoverageGroups.entries()].map(([employeeId, employeeTasks]) => {
+    const start = employeeTasks.map((task) => task.startTime).filter((value): value is string => Boolean(value)).sort()[0];
+    const end = employeeTasks.map((task) => task.endTime).filter((value): value is string => Boolean(value)).sort().at(-1);
+    const detail = (cleanTaskNote(employeeTasks[0]?.note ?? "") ?? "").replace(/ · (shared coverage|primary focus during shared coverage)$/i, "");
+    return `• ${mention(employeeId)} · *${formatTime(start ?? "13:00")}–${formatTime(end ?? "18:00")}* · ${detail}\n  Provides shared account coverage before their later shift assignments.`;
+  });
   const breakGroups = Map.groupBy(breaks.sort((left, right) => left.startTime.localeCompare(right.startTime)), (item) => `${item.type}|${item.startTime}|${item.endTime}`);
   const breakLines = [...breakGroups.values()].map((group) => {
     const label = group[0].type === "MAIN" ? "Main break" : "Short break";
@@ -126,6 +140,9 @@ export async function POST(request: Request) {
         },
         { type: "divider" },
         { type: "section", text: { type: "mrkdwn", text: `*Today’s coverage*\n\n${shiftLines.join("\n\n")}` } },
+        ...(sharedCoverageLines.length
+          ? [{ type: "divider" as const }, { type: "section" as const, text: { type: "mrkdwn" as const, text: `*Shared coverage period*\n${sharedCoverageLines.join("\n")}` } }]
+          : []),
         { type: "divider" },
         ...(primaryTaskLines.length
           ? [{ type: "section" as const, text: { type: "mrkdwn" as const, text: `*Primary assignments*\n_Focused ownership for today_\n\n${primaryTaskLines.join("\n\n")}` } }]
@@ -183,7 +200,7 @@ export async function POST(request: Request) {
                   ? ` · ${formatTime(task.startTime)}–${formatTime(task.endTime)}`
                   : "";
                 const note = settings.includeNotesInSlack ? cleanTaskNote(task.note) : "";
-                return `• ${taskEmoji(task.category.name)} *${task.category.name}* · P${task.priority}${period}${note ? `\n  _${note}_` : ""}`;
+                return `• ${taskEmoji(task.category.name, task.category.icon)} *${task.category.name}* · P${task.priority}${period}${note ? `\n  _${note}_` : ""}`;
               })
               .join("\n")
           : "No tasks are assigned to you today.";

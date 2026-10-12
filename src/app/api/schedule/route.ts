@@ -5,7 +5,7 @@ import { generateSchedule } from "@/features/scheduling/engine/generate-schedule
 type ShiftConfig = { id: string; name: string; startTime: string; endTime: string; order: number; staffingRules: { dayOfWeek: number; minimumStaff: number; minimumBilingual: number; isOverride: boolean }[] };
 type AccountConfig = { id: string; operatingWindows?: { dayOfWeek: number }[]; coverageRequirements: { dayOfWeek: number; startTime: string; endTime: string; minimumStaff: number; minimumBilingual: number }[] };
 
-function effectiveStaffing(shifts: ShiftConfig[], accounts: AccountConfig[], employeeCount: number) {
+function effectiveStaffing(shifts: ShiftConfig[], accounts: AccountConfig[], employeeCount: number, maxWeeklyDays: number) {
   const operatingDays = [...new Set(accounts.flatMap((account) => (account.operatingWindows ?? account.coverageRequirements).map((item) => item.dayOfWeek)))];
   const staff = new Map<string, number>(); const bilingual = new Map<string, number>(); const requiredAccounts = new Map<string, string[]>();
   for (const shift of shifts) for (const day of operatingDays) {
@@ -16,15 +16,19 @@ function effectiveStaffing(shifts: ShiftConfig[], accounts: AccountConfig[], emp
     bilingual.set(key, rule?.isOverride ? rule.minimumBilingual : Math.max(0, ...covered.map((item) => item.minimumBilingual)));
     requiredAccounts.set(key, [...new Set(covered.map((item) => item.accountId))]);
   }
-  const weeklyTarget = employeeCount * 5;
+  const weeklyTarget = employeeCount * maxWeeklyDays;
   let remaining = Math.max(0, weeklyTarget - [...staff.values()].reduce((sum, value) => sum + value, 0));
   const dayShift = [...shifts].sort((left, right) => left.startTime.localeCompare(right.startTime) || left.order - right.order)[0];
   while (remaining > 0 && dayShift) {
     const candidates = operatingDays.filter((day) => !dayShift.staffingRules.find((rule) => rule.dayOfWeek === day)?.isOverride && (staff.get(`${dayShift.id}:${day}`) ?? 0) + shifts.filter((shift) => shift.id !== dayShift.id).reduce((sum, shift) => sum + (staff.get(`${shift.id}:${day}`) ?? 0), 0) < employeeCount);
     if (!candidates.length) break;
     const weights = new Map(candidates.map((day) => [day, accounts.filter((account) => (account.operatingWindows ?? account.coverageRequirements).some((item) => item.dayOfWeek === day)).length]));
-    const maxWeight = Math.max(...weights.values());
-    const day = candidates.filter((item) => weights.get(item) === maxWeight).sort((left, right) => (staff.get(`${dayShift.id}:${left}`) ?? 0) - (staff.get(`${dayShift.id}:${right}`) ?? 0) || ((left + 6) % 7) - ((right + 6) % 7))[0];
+    // Staffing rules remain the source of truth. When the weekly work target
+    // needs one extra assignment, prefer the operating day with the greatest
+    // configured account demand. A day explicitly overridden in Operations is
+    // never increased here.
+    const totalStaffed = (day: number) => shifts.reduce((sum, shift) => sum + (staff.get(`${shift.id}:${day}`) ?? 0), 0);
+    const day = candidates.sort((left, right) => (weights.get(right) ?? 0) - (weights.get(left) ?? 0) || totalStaffed(left) - totalStaffed(right) || ((left + 6) % 7) - ((right + 6) % 7))[0];
     staff.set(`${dayShift.id}:${day}`, (staff.get(`${dayShift.id}:${day}`) ?? 0) + 1); remaining -= 1;
   }
   return { operatingDays, staff, bilingual, requiredAccounts };
@@ -37,16 +41,38 @@ export async function GET(request: Request) {
   if (!period) return NextResponse.json(null);
   const monthStart = new Date(Date.UTC(year, month - 1, 1));
   const monthEnd = new Date(Date.UTC(year, month, 1));
-  const breaks = await prisma.breakSchedule.findMany({
+  // The weekly grid always starts on Monday and ends on Sunday. Fetching this
+  // complete range lets the final week of one generated month continue into
+  // the next generated month instead of showing empty placeholder cells.
+  const gridStart = new Date(monthStart);
+  gridStart.setUTCDate(gridStart.getUTCDate() - ((gridStart.getUTCDay() + 6) % 7));
+  const lastDay = new Date(Date.UTC(year, month, 0));
+  const gridEndExclusive = new Date(lastDay);
+  gridEndExclusive.setUTCDate(gridEndExclusive.getUTCDate() + ((7 - ((gridEndExclusive.getUTCDay() + 6) % 7) - 1) % 7) + 1);
+  const [breaks, weeklyAssignments, weeklyBreaks] = await Promise.all([
+    prisma.breakSchedule.findMany({
     where: { date: { gte: monthStart, lt: monthEnd } },
     orderBy: [{ date: "asc" }, { startTime: "asc" }],
-  });
+    }),
+    prisma.shiftAssignment.findMany({
+      where: { date: { gte: gridStart, lt: gridEndExclusive } },
+      include: { employee: true, shift: true },
+      orderBy: { date: "asc" },
+    }),
+    prisma.breakSchedule.findMany({
+      where: { date: { gte: gridStart, lt: gridEndExclusive } },
+      orderBy: [{ date: "asc" }, { startTime: "asc" }],
+    }),
+  ]);
   const [rules, accounts] = await Promise.all([
     prisma.staffingRule.findMany({ include: { shift: true } }),
     prisma.account.findMany({ where: { active: true }, include: { coverageRequirements: true, employeeCapabilities: true } }),
   ]);
   const operatingDays = new Set(accounts.flatMap((account) => account.coverageRequirements.map((item) => item.dayOfWeek)));
   const warnings: { date: string; shiftId: string; severity: "critical"; code: string; message: string }[] = [];
+  for (const assignment of period.assignments.filter((item) => item.source === "archive-needs-replacement")) {
+    warnings.push({ date: assignment.date.toISOString().slice(0, 10), shiftId: `replacement:${assignment.employeeId}`, severity: "critical", code: "REPLACEMENT_REQUIRED", message: `${assignment.employee.name} was archived. Replace this future shift before approving the schedule.` });
+  }
   const working = period.assignments.filter((assignment) => assignment.status === "WORKING" && assignment.shiftId);
   const dateKeys = [...new Set(period.assignments.map((assignment) => assignment.date.toISOString().slice(0, 10)))];
   for (const date of dateKeys) {
@@ -66,7 +92,7 @@ export async function GET(request: Request) {
       if(bilingual<requirement.minimumBilingual)warnings.push({date,shiftId:`account:${account.id}`,severity:"critical",code:"BILINGUAL_SHORTAGE",message:`${account.name} ${requirement.startTime}–${requirement.endTime} needs ${requirement.minimumBilingual-bilingual} more bilingual agent(s).`});
     }
   }
-  return NextResponse.json({ ...period, breaks, warnings });
+  return NextResponse.json({ ...period, breaks, weeklyAssignments, weeklyBreaks, warnings });
 }
 
 export async function POST(request: Request) {
@@ -79,17 +105,27 @@ export async function POST(request: Request) {
     prisma.account.findMany({ where: { active: true }, include: { operatingWindows: true, coverageRequirements: true } }),
   ]);
   if (!employees.length || !shifts.length) return NextResponse.json({ error: "Add at least one employee and one shift first." }, { status: 400 });
+  const latestStartingShift = [...shifts].sort((left, right) => right.startTime.localeCompare(left.startTime))[0];
   const existing = await prisma.schedulePeriod.findUnique({ where: { year_month: { year, month } } });
   if (existing && existing.status !== "DRAFT" && !force) return NextResponse.json({ error: "This schedule is approved. Reopen it before generating a replacement.", code: "SCHEDULE_LOCKED" }, { status: 409 });
-  const targets = effectiveStaffing(shifts, accounts, employees.length);
+  const monthStart = new Date(Date.UTC(year, month - 1, 1));
+  const monthEnd = new Date(Date.UTC(year, month, 1));
+  const cutoverDate = settings.projectStartDate ? new Date(`${settings.projectStartDate.toISOString().slice(0, 10)}T00:00:00.000Z`) : null;
+  if (cutoverDate && (cutoverDate < monthStart || cutoverDate >= monthEnd)) {
+    return NextResponse.json({ error: `Initial transition is set for ${cutoverDate.toISOString().slice(0, 10)}. Generate that month first, then the transition will complete.` }, { status: 409 });
+  }
+  const scheduleStart = cutoverDate ?? monthStart;
+  const targets = effectiveStaffing(shifts, accounts, employees.length, settings.maxWeeklyDays);
   const operatingDays = targets.operatingDays;
   if (!operatingDays.length) return NextResponse.json({ error: "Add operating hours for at least one active account before generating a schedule." }, { status: 409 });
-  const monthStart = new Date(Date.UTC(year, month - 1, 1));
-  const historyStart = new Date(monthStart); historyStart.setUTCDate(historyStart.getUTCDate() - settings.historyWindowDays);
+  const historyStart = new Date(scheduleStart); historyStart.setUTCDate(historyStart.getUTCDate() - settings.historyWindowDays);
   const [priorAssignments, openingHistory] = await Promise.all([
-    prisma.shiftAssignment.findMany({ where: { date: { gte: historyStart, lt: monthStart }, employeeId: { in: employees.map((employee) => employee.id) }, schedulePeriod: { status: { in: ["APPROVED", "PUBLISHED"] } } }, select: { employeeId: true, date: true, status: true, shiftId: true } }),
-    prisma.openingHistory.findMany({ where: { date: { gte: historyStart, lt: monthStart }, employeeId: { in: employees.map((employee) => employee.id) } }, select: { employeeId: true, date: true, status: true, shiftId: true } }),
+    prisma.shiftAssignment.findMany({ where: { date: { gte: historyStart, lt: scheduleStart }, employeeId: { in: employees.map((employee) => employee.id) }, schedulePeriod: { status: { in: ["APPROVED", "PUBLISHED"] } } }, select: { employeeId: true, date: true, status: true, shiftId: true } }),
+    prisma.openingHistory.findMany({ where: { date: { gte: historyStart, lt: scheduleStart }, employeeId: { in: employees.map((employee) => employee.id) } }, select: { employeeId: true, date: true, status: true, shiftId: true } }),
   ]);
+  if (cutoverDate && openingHistory.length < employees.length * settings.historyWindowDays) {
+    return NextResponse.json({ error: `Save the previous ${settings.historyWindowDays} days of handover history for every active agent before generating the initial transition schedule.`, code: "HISTORY_REQUIRED" }, { status: 409 });
+  }
   const historyByEmployee = new Map<string, Map<string, { date: string; status: "WORKING" | "OFF" | "PTO" | "ANNUAL_LEAVE" | "EMERGENCY_LEAVE" | "COMP_OFF" | "PUBLIC_HOLIDAY" | "SICK" | "UNPAID_LEAVE" | "OTHER_LEAVE"; shiftId: string | null }>>();
   for (const entry of [...openingHistory, ...priorAssignments]) {
     const employeeHistory = historyByEmployee.get(entry.employeeId) ?? new Map();
@@ -97,22 +133,21 @@ export async function POST(request: Request) {
     historyByEmployee.set(entry.employeeId, employeeHistory);
   }
   const priorAssignmentsByEmployee = Object.fromEntries(employees.map((employee) => [employee.id, [...(historyByEmployee.get(employee.id)?.values() ?? [])]]));
-  const generated = generateSchedule({ year, month, variationSeed: Date.now(), maxConsecutiveDays: settings.maxConsecutiveDays, operatingDays, weekStartsOn: settings.weekStartsOn, maxWeeklyDays: settings.maxWeeklyDays, priorAssignments: priorAssignmentsByEmployee, employees: employees.map(e => ({ id: e.id, name: e.name, preferredShiftId: e.preferredShiftId, isBilingual: e.isBilingual, accountIds: e.accountCapabilities.map((item) => item.accountId), dayOffPreferences: e.dayOffPreferences.map(d => ({ dayOfWeek: d.dayOfWeek, rank: d.rank })), timeOff: e.timeOff.map(t => ({ date: t.date.toISOString().slice(0, 10), type: t.type })) })), shifts: shifts.map(s => ({ id: s.id, name: s.name, startTime: s.startTime, minimumByDay: Object.fromEntries(operatingDays.map(day => [day, targets.staff.get(`${s.id}:${day}`) ?? 0])), bilingualByDay: Object.fromEntries(operatingDays.map(day => [day, targets.bilingual.get(`${s.id}:${day}`) ?? 0])), requiredAccountIdsByDay: Object.fromEntries(operatingDays.map(day => [day, targets.requiredAccounts.get(`${s.id}:${day}`) ?? []])) })) });
+  const generated = generateSchedule({ year, month, startDate: scheduleStart.toISOString().slice(0, 10), variationSeed: Date.now(), maxConsecutiveDays: settings.maxConsecutiveDays, operatingDays, weekStartsOn: settings.weekStartsOn, maxWeeklyDays: settings.maxWeeklyDays, priorAssignments: priorAssignmentsByEmployee, employees: employees.map(e => ({ id: e.id, name: e.name, preferredShiftId: e.preferredShiftId, isBilingual: e.isBilingual, accountIds: e.accountCapabilities.map((item) => item.accountId), dayOffPreferences: e.dayOffPreferences.map(d => ({ dayOfWeek: d.dayOfWeek, rank: d.rank })), timeOff: e.timeOff.map(t => ({ date: t.date.toISOString().slice(0, 10), type: t.type })) })), shifts: shifts.map(s => ({ id: s.id, name: s.name, startTime: s.startTime, minimumByDay: Object.fromEntries(operatingDays.map(day => [day, targets.staff.get(`${s.id}:${day}`) ?? 0])), bilingualByDay: Object.fromEntries(operatingDays.map(day => [day, targets.bilingual.get(`${s.id}:${day}`) ?? 0])), requiredAccountIdsByDay: Object.fromEntries(operatingDays.map(day => [day, targets.requiredAccounts.get(`${s.id}:${day}`) ?? []])) })) });
   const period = await prisma.$transaction(async tx => {
     const saved = await tx.schedulePeriod.upsert({ where: { year_month: { year, month } }, create: { year, month, generatedAt: new Date() }, update: { status: "DRAFT", generatedAt: new Date() } });
-    const monthEnd = new Date(Date.UTC(year, month, 1));
     await tx.taskAssignment.deleteMany({ where: { date: { gte: monthStart, lt: monthEnd } } });
     await tx.breakSchedule.deleteMany({ where: { date: { gte: monthStart, lt: monthEnd } } });
     await tx.shiftAssignment.deleteMany({ where: { schedulePeriodId: saved.id } });
     await tx.shiftAssignment.createMany({ data: generated.assignments.map(a => {
       const shift = shifts.find((item) => item.id === a.shiftId);
       const weekday = new Date(`${a.date}T00:00:00.000Z`).getUTCDay();
-      const workLocation = a.status === "WORKING" && (settings.wfhDays.includes(weekday) || (settings.lateShiftWfh && /late|night/i.test(shift?.name ?? ""))) ? "WFH" : "OFFICE";
+      const workLocation = a.status === "WORKING" && (settings.wfhDays.includes(weekday) || (settings.lateShiftWfh && shift?.id === latestStartingShift?.id)) ? "WFH" : "OFFICE";
       return { schedulePeriodId: saved.id, employeeId: a.employeeId, date: new Date(`${a.date}T00:00:00.000Z`), status: a.status, shiftId: a.shiftId, workLocation };
     }) });
     return saved;
   });
-  return NextResponse.json({ period, warnings: generated.warnings });
+  return NextResponse.json({ period, warnings: generated.warnings, generatedFrom: scheduleStart.toISOString().slice(0, 10) });
 }
 
 export async function PATCH(request: Request) {
@@ -152,6 +187,9 @@ export async function PATCH(request: Request) {
   const period = await prisma.schedulePeriod.update({ where: { year_month: key }, data: { status, approvedAt: status === "APPROVED" ? new Date() : status === "DRAFT" ? null : undefined } });
   if (status !== "APPROVED") return NextResponse.json(period);
   const approvalSettings = await prisma.appSettings.upsert({ where: { id: "global" }, create: { id: "global" }, update: {} });
+  if (approvalSettings.projectStartDate && approvalSettings.projectStartDate.getUTCFullYear() === key.year && approvalSettings.projectStartDate.getUTCMonth() + 1 === key.month) {
+    await prisma.appSettings.update({ where: { id: "global" }, data: { projectStartDate: null } });
+  }
   if (!approvalSettings.autoPrepareDailyPlans) return NextResponse.json({ ...period, planning: { created: 0, existing: 0, failed: 0, skipped: true } });
   const dates = [...new Set(current.assignments.filter((assignment) => assignment.status === "WORKING").map((assignment) => assignment.date.toISOString().slice(0, 10)))].sort();
   const planning = { created: 0, existing: 0, failed: 0 };

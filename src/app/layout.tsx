@@ -2,7 +2,7 @@ import type { Metadata } from "next";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: { default: "Tradeling CS Operations", template: "%s | CS Operations" },
+  title: { default: "CS Operations", template: "%s | CS Operations" },
   description: "Customer service scheduling, daily tasks, and Slack automation",
 };
 

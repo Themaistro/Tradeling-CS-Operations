@@ -21,6 +21,9 @@ import {
 import { PageHeading } from "@/components/ui/page-heading";
 
 type Settings = {
+  organizationName: string;
+  workspaceName: string;
+  primaryLanguageLabel: string;
   timezone: string;
   postTime: string;
   slackChannelId: string;
@@ -342,6 +345,7 @@ export default function SettingsPage() {
         ? "Your settings have been saved."
         : "The settings could not be saved. Please review the fields and try again.",
     });
+    if (response.ok) window.dispatchEvent(new Event("cs-identity-updated"));
     setSaving(false);
   }
 
@@ -401,9 +405,11 @@ export default function SettingsPage() {
 
   async function testSlack() {
     setTestingSlack(true);
-    const response = await fetch("/api/slack/status");
+    const response = await fetch("/api/slack/status", { method: "POST" });
     const result = await response.json();
-    setNotice({ kind: result.connected ? "success" : "error", text: result.connected ? `Connected to ${result.team} as ${result.user}.` : result.error || "Slack connection failed." });
+    const checks = result.checks as { channel?: { ok: boolean; detail: string }; directMessages?: { ok: boolean; detail: string }; acknowledgements?: { ok: boolean; detail: string } } | undefined;
+    const checkSummary = checks ? [checks.channel, checks.directMessages, checks.acknowledgements].filter(Boolean).map((check) => `${check?.ok ? "✓" : "✕"} ${check?.detail}`).join(" · ") : "";
+    setNotice({ kind: result.connected ? "success" : "error", text: result.connected ? `Slack delivery test passed. ${checkSummary}` : `${result.error || "Slack delivery test failed."}${checkSummary ? ` ${checkSummary}` : ""}` });
     setTestingSlack(false);
   }
 
@@ -411,7 +417,7 @@ export default function SettingsPage() {
     setSaving(true); setNotice(null);
     const response = await fetch("/api/settings/slack-credentials", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ botToken, appToken }) });
     const result = await response.json();
-    setNotice({ kind: response.ok ? "success" : "error", text: response.ok ? `Slack credentials saved securely.${result.restartRequired ? " Restart the application once to activate Socket Mode acknowledgements." : ""}` : result.error || "Slack credentials could not be saved." });
+    setNotice({ kind: response.ok ? "success" : "error", text: response.ok ? `Slack credentials saved securely.${result.restartRequired ? " Restart the application once to activate the updated credentials and acknowledgement handling." : ""}` : result.error || "Slack credentials could not be saved." });
     if (response.ok) { setBotToken(""); setAppToken(""); await load(); }
     setSaving(false);
   }
@@ -427,6 +433,20 @@ export default function SettingsPage() {
         setNotice({ kind: response.ok ? "success" : "error", text: response.ok ? "Saved Slack credentials were removed. Restart the application to stop the current Socket Mode connection." : "Saved Slack credentials could not be removed." });
         if (response.ok) await load();
         setSaving(false);
+      },
+    });
+  }
+
+  function resetScheduleData() {
+    setConfirmation({
+      title: "Reset schedules and daily tasks?",
+      message: "This permanently removes generated schedules, daily tasks, breaks, Slack posting history, acknowledgements, and previous-history entries. Your team, accounts, tasks, shifts, settings, and saved Slack credentials will remain in place.",
+      confirmLabel: "Reset schedule data",
+      action: async () => {
+        const response = await fetch("/api/data/reset", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ confirmation: "RESET_SCHEDULE_DATA" }) });
+        const body = await response.json();
+        setNotice({ kind: response.ok ? "success" : "error", text: response.ok ? `Schedule data reset. ${body.removed.schedules} schedule${body.removed.schedules === 1 ? " was" : "s were"} removed. You can now run the initial cutover.` : body.error || "Schedule data could not be reset." });
+        if (response.ok) await load();
       },
     });
   }
@@ -459,7 +479,7 @@ export default function SettingsPage() {
     {
       id: "general" as const,
       label: "Scheduling",
-      helper: `Prepare on day ${settings.scheduleBuildCutoff}`,
+      helper: `Planning reminder: day ${settings.scheduleBuildCutoff}`,
       icon: Settings2,
     },
     {
@@ -571,6 +591,15 @@ export default function SettingsPage() {
                 description="Control how future rosters continue from history, allocate working days, and apply WFH rules."
               />
               <div className="space-y-6 p-6">
+                <div className="rounded-2xl border border-slate-200 p-5">
+                  <h3 className="font-bold text-slate-900">Workspace identity</h3>
+                  <p className="mt-1 text-sm text-slate-500">These labels appear in the app header, schedule exports, and language-based roster views.</p>
+                  <div className="mt-4 grid gap-5 lg:grid-cols-3">
+                    <Label title="Organization name" helper="Your company or operating brand"><input value={settings.organizationName} onChange={(e) => setSettings({ ...settings, organizationName: e.target.value })} className={field} /></Label>
+                    <Label title="Workspace name" helper="The team or function using this tool"><input value={settings.workspaceName} onChange={(e) => setSettings({ ...settings, workspaceName: e.target.value })} className={field} /></Label>
+                    <Label title="Primary language label" helper="Shown for language-qualified agents and coverage"><input value={settings.primaryLanguageLabel} onChange={(e) => setSettings({ ...settings, primaryLanguageLabel: e.target.value })} className={field} /></Label>
+                  </div>
+                </div>
                 <div className="grid gap-5 lg:grid-cols-3">
                   <Label
                     title="Business timezone"
@@ -636,7 +665,7 @@ export default function SettingsPage() {
                   <Label title="Previous-history window" helper="Days reviewed before the new schedule starts">
                     <input type="number" min="3" max="14" value={settings.historyWindowDays} onChange={(e) => setSettings({ ...settings, historyWindowDays: Number(e.target.value) })} className={field} />
                   </Label>
-                  <Label title="Monthly preparation day" helper="Recommended day to begin preparing the next roster">
+                  <Label title="Monthly preparation reminder" helper="A planning reminder only. It does not generate or change any schedule automatically.">
                     <input type="number" min="1" max="28" value={settings.scheduleBuildCutoff} onChange={(e) => setSettings({ ...settings, scheduleBuildCutoff: Number(e.target.value) })} className={field} />
                   </Label>
                 </div>
@@ -644,7 +673,7 @@ export default function SettingsPage() {
                   <h3 className="font-bold text-slate-900">Work-from-home policy</h3>
                   <p className="mt-1 text-sm text-slate-500">Generated schedules apply these defaults. Draft assignments can still be changed manually.</p>
                   <div className="mt-4 flex flex-wrap gap-2">{["Sunday","Monday","Tuesday","Wednesday","Thursday","Friday","Saturday"].map((day,index)=><button type="button" key={day} onClick={()=>setSettings({...settings,wfhDays:settings.wfhDays.includes(index)?settings.wfhDays.filter((value)=>value!==index):[...settings.wfhDays,index]})} className={`rounded-lg border px-3 py-2 text-xs font-bold ${settings.wfhDays.includes(index)?"border-blue-500 bg-blue-50 text-blue-700":"border-slate-200 text-slate-500"}`}>{day.slice(0,3)}</button>)}</div>
-                  <label className="mt-4 flex items-center gap-3 text-sm font-bold text-slate-700"><input type="checkbox" checked={settings.lateShiftWfh} onChange={(event)=>setSettings({...settings,lateShiftWfh:event.target.checked})} className="accent-orange-500" />Late shifts are WFH by default</label>
+                  <label className="mt-4 flex items-center gap-3 text-sm font-bold text-slate-700"><input type="checkbox" checked={settings.lateShiftWfh} onChange={(event)=>setSettings({...settings,lateShiftWfh:event.target.checked})} className="accent-orange-500" />The latest-starting shift ({[...data.shifts].sort((left, right) => right.startTime.localeCompare(left.startTime))[0]?.name ?? "not configured"}) is WFH by default</label>
                 </div>
                 <Toggle label="Prepare daily tasks and breaks when a schedule is approved" checked={settings.autoPrepareDailyPlans} onChange={(value)=>setSettings({...settings,autoPrepareDailyPlans:value})} />
                 <div className="rounded-xl border border-blue-100 bg-blue-50 p-5 text-sm text-blue-800">
@@ -783,23 +812,13 @@ export default function SettingsPage() {
                 description="Choose where, when, and how the approved daily roster will be posted."
               />
               <div className="space-y-6 p-6">
-                <div
-                  className={`rounded-xl border p-4 ${data.slackConfigured ? "border-emerald-200 bg-emerald-50" : "border-amber-200 bg-amber-50"}`}
-                >
-                  <p className="text-sm font-bold">
-                    {data.slackConfigured
-                      ? "Slack credentials are configured"
-                      : "Slack credentials are not configured"}
-                  </p>
-                  <p className="mt-1 text-sm">
-                    {data.slackConfigured
-                      ? "The bot and app tokens are available. Use the connection test after saving the channel."
-                      : "Add the bot and app tokens below, then test the connection."}
-                  </p>
+                <div className={`rounded-xl border p-4 ${data.slackConfigured ? "border-emerald-200 bg-emerald-50" : data.slackCredentials.botTokenConfigured ? "border-blue-200 bg-blue-50" : "border-amber-200 bg-amber-50"}`}>
+                  <p className="text-sm font-bold">{data.slackConfigured ? "Slack delivery and acknowledgements are ready" : data.slackCredentials.botTokenConfigured ? "Slack posting is ready; acknowledgements need the app-level token" : "Slack credentials are not configured"}</p>
+                  <p className="mt-1 text-sm">{data.slackConfigured ? "Save the channel and use the connection test to verify posting, private messages, and acknowledgements." : data.slackCredentials.botTokenConfigured ? "The bot can post once a channel is saved. Add the app-level token and restart the application to enable acknowledgement buttons." : "Add the bot token to enable posting. Add the app-level token as well if you want acknowledgement buttons."}</p>
                 </div>
                 <div className="rounded-2xl border border-slate-200 p-5">
                   <h3 className="font-bold text-slate-900">Slack credentials</h3>
-                  <p className="mt-1 text-sm text-slate-500">Saved tokens are encrypted and are never displayed again. Leave a field empty to keep its existing value.</p>
+                  <p className="mt-1 text-sm text-slate-500">Saved tokens are encrypted and are never displayed again. Leave a field empty to keep its existing value. Restart the application after changing either token.</p>
                   <div className="mt-4 grid gap-4 sm:grid-cols-2">
                     <Label title="Bot user token" helper={data.slackCredentials.botTokenConfigured ? "Saved · enter a new xoxb token only to replace it" : "Required · starts with xoxb-"}>
                       <input type="password" autoComplete="new-password" value={botToken} onChange={(event)=>setBotToken(event.target.value.trim())} placeholder={data.slackCredentials.botTokenConfigured ? "•••••••••••••••• saved" : "xoxb-…"} className={field} />
@@ -872,7 +891,7 @@ export default function SettingsPage() {
                 </div>
                 <div className="grid gap-3 sm:grid-cols-2">
                   <Toggle label="Require acknowledgement" checked={settings.requireAcknowledgement} onChange={(value)=>setSettings({...settings,requireAcknowledgement:value})} />
-                  <button type="button" disabled={testingSlack} onClick={testSlack} className="flex items-center justify-center gap-2 rounded-xl border border-slate-200 p-4 text-sm font-bold text-slate-700 hover:bg-slate-50">{testingSlack && <LoaderCircle className="h-4 w-4 animate-spin" />}{testingSlack ? "Testing connection…" : "Test Slack connection"}</button>
+                  <button type="button" disabled={testingSlack} onClick={testSlack} className="flex items-center justify-center gap-2 rounded-xl border border-slate-200 p-4 text-sm font-bold text-slate-700 hover:bg-slate-50" title="Sends and removes temporary tests in the configured channel and one available agent’s direct message.">{testingSlack && <LoaderCircle className="h-4 w-4 animate-spin" />}{testingSlack ? "Testing connection…" : "Run delivery test"}</button>
                 </div>
                 <PostCountdown settings={settings} />
                 <PostingHistoryPanel data={data} timezone={settings.timezone} />
@@ -912,6 +931,15 @@ export default function SettingsPage() {
                     environment. Change the default credentials before team
                     testing.
                   </p>
+                </div>
+                <div className="rounded-2xl border border-red-200 bg-red-50 p-5 lg:col-span-2">
+                  <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
+                    <div>
+                      <h3 className="font-bold text-red-950">Reset schedules and daily tasks</h3>
+                      <p className="mt-2 max-w-3xl text-sm leading-6 text-red-800">Use this only when starting a fresh test or a new transition. It removes generated schedules, daily plans, breaks, acknowledgement records, Slack posting history, and previous-history entries. Team members, accounts, shifts, tasks, operational rules, settings, and Slack credentials are kept.</p>
+                    </div>
+                    <button type="button" onClick={resetScheduleData} className="shrink-0 rounded-xl bg-red-600 px-5 py-3 text-sm font-bold text-white hover:bg-red-700">Reset schedule data</button>
+                  </div>
                 </div>
               </div>
             </div>
@@ -981,6 +1009,15 @@ function configurationSteps(data: Data) {
   return [
     {
       number: 1,
+      title: "Team",
+      description: "Add each agent, their Slack member ID, language qualification, preferred shift, preferred days off, and planned leave.",
+      detail: `${readiness.employees} agents · ${readiness.employeesWithSlack} with Slack IDs`,
+      ready: readiness.employees > 0 && readiness.employeesWithSlack === readiness.employees,
+      href: "/team",
+      action: "Configure team",
+    },
+    {
+      number: 2,
       title: "Accounts and service hours",
       description: "Add every customer account, choose its working days, and define the hours that require coverage.",
       detail: `${readiness.accounts} active account${readiness.accounts === 1 ? "" : "s"} · ${readiness.operatingWindows} service window${readiness.operatingWindows === 1 ? "" : "s"}`,
@@ -989,34 +1026,16 @@ function configurationSteps(data: Data) {
       action: "Configure operations",
     },
     {
-      number: 2,
-      title: "Required coverage",
-      description: "Set the minimum total and bilingual agents required for each account, day, and time period.",
-      detail: `${readiness.coverageRequirements} coverage rule${readiness.coverageRequirements === 1 ? "" : "s"}`,
-      ready: readiness.coverageRequirements > 0,
-      href: "/operations",
-      action: "Review coverage",
-    },
-    {
       number: 3,
-      title: "Tasks and rotation rules",
-      description: "Create account tasks and choose whether each one is assigned to everyone, rotated as focused ownership, or treated as supporting work.",
-      detail: `${readiness.tasks} active task${readiness.tasks === 1 ? "" : "s"}`,
-      ready: readiness.tasks > 0,
+      title: "Coverage, eligibility, and tasks",
+      description: "Set required coverage, choose which agents can work each account, and create the tasks and weekly rotation rules.",
+      detail: `${readiness.coverageRequirements} coverage rule${readiness.coverageRequirements === 1 ? "" : "s"} · ${readiness.tasks} task${readiness.tasks === 1 ? "" : "s"}`,
+      ready: readiness.coverageRequirements > 0 && readiness.tasks > 0 && readiness.employeesWithAccounts === readiness.employees,
       href: "/operations",
-      action: "Configure tasks",
+      action: "Configure coverage and tasks",
     },
     {
       number: 4,
-      title: "Team and eligibility",
-      description: "Add agents, Slack member IDs, account eligibility, language coverage, preferred days off, and planned leave.",
-      detail: `${readiness.employees} agents · ${readiness.employeesWithSlack} with Slack · ${readiness.employeesWithAccounts} account-ready`,
-      ready: readiness.employees > 0 && readiness.employeesWithSlack === readiness.employees && readiness.employeesWithAccounts === readiness.employees,
-      href: "/team",
-      action: "Review team",
-    },
-    {
-      number: 5,
       title: "Shifts and staffing",
       description: "Define shift times, then set the minimum staffing and bilingual requirement for every day.",
       detail: `${readiness.shifts} shifts · ${readiness.staffingRules} daily staffing rule${readiness.staffingRules === 1 ? "" : "s"}`,
@@ -1025,7 +1044,7 @@ function configurationSteps(data: Data) {
       action: "Configure shifts",
     },
     {
-      number: 6,
+      number: 5,
       title: "Scheduling, WFH, and breaks",
       description: "Review working-day limits, consecutive days, history, WFH defaults, break lengths, spacing, and live-channel protection.",
       detail: "Operational defaults are available and can be changed",
@@ -1034,22 +1053,31 @@ function configurationSteps(data: Data) {
       action: "Review policies",
     },
     {
-      number: 7,
-      title: "Slack delivery",
-      description: "Save the Slack credentials and channel, choose the posting time, and test the connection.",
-      detail: readiness.slackReady ? "Credentials and channel are ready" : "Slack setup is incomplete",
-      ready: readiness.slackReady,
-      tab: "slack" as Tab,
-      action: "Configure Slack",
-    },
-    {
-      number: 8,
+      number: 6,
       title: "Generate and approve a schedule",
       description: "Generate the month, review coverage warnings, make any adjustments, then approve it to prepare daily tasks and breaks.",
       detail: `${readiness.approvedSchedules} approved schedule${readiness.approvedSchedules === 1 ? "" : "s"}`,
       ready: readiness.approvedSchedules > 0,
       href: "/schedule",
       action: "Open schedule",
+    },
+    {
+      number: 7,
+      title: "Daily tasks and Slack delivery",
+      description: "Review the prepared daily plan and make any operational adjustments before the briefing is sent to Slack.",
+      detail: readiness.approvedSchedules > 0 ? "Daily planning is available" : "Approve a schedule first",
+      ready: readiness.approvedSchedules > 0,
+      href: "/tasks",
+      action: "Open daily tasks",
+    },
+    {
+      number: 8,
+      title: "Slack delivery",
+      description: "Save the Slack credentials and channel, choose the posting time, test the connection, then send the confirmed daily briefing manually or automatically.",
+      detail: readiness.slackReady ? "Credentials and channel are ready" : "Slack setup is incomplete",
+      ready: readiness.slackReady,
+      tab: "slack" as Tab,
+      action: "Configure Slack",
     },
   ];
 }
@@ -1066,14 +1094,14 @@ function ConfigurationGuide({ data, setTab, onStart }: { data: Data; setTab: (ta
 
   return (
     <div>
-      <SectionHeader icon={BookOpenCheck} title="Configuration guide" description="Follow these steps in order to prepare the operation, generate reliable schedules, and automate daily Slack delivery." />
+      <SectionHeader icon={BookOpenCheck} title="Configuration guide" description="First-time setup follows one flow: Team → Operations → scheduling policies → Schedule → Daily Tasks → Slack delivery." />
       <div className="space-y-7 p-6">
         <div className="rounded-2xl bg-slate-950 p-6 text-white">
           <div className="flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
             <div>
               <p className="text-xs font-bold uppercase tracking-[0.18em] text-orange-400">Setup progress</p>
               <h3 className="mt-2 text-2xl font-bold">{progress.complete} of {progress.total} steps ready</h3>
-              <p className="mt-2 max-w-2xl text-sm leading-6 text-slate-400">The guide checks the live configuration. Return here whenever accounts, staffing, or team details change.</p>
+              <p className="mt-2 max-w-2xl text-sm leading-6 text-slate-400">Complete each step in order. Team details are created once, Operations controls account eligibility, and the approved schedule becomes the source for daily tasks and Slack delivery.</p>
             </div>
             <div className="flex items-center gap-4"><p className="text-4xl font-bold text-white">{percentage}%</p><button type="button" onClick={onStart} className="rounded-xl bg-orange-500 px-5 py-3 text-sm font-bold text-white hover:bg-orange-600">Start guided setup</button></div>
           </div>

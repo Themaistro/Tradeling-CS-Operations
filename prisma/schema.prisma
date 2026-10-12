@@ -323,6 +323,9 @@ model SlackPostLog {
 
 model AppSettings {
   id                      String    @id @default("global")
+  organizationName        String    @default("Tradeling")
+  workspaceName           String    @default("Customer Service Operations")
+  primaryLanguageLabel    String    @default("Arabic")
   timezone                String    @default("Asia/Dubai")
   postTime                String    @default("08:00")
   automationEnabled       Boolean   @default(false)

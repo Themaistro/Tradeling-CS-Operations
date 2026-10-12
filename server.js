@@ -134,11 +134,21 @@ app.prepare().then(async () => {
   const storedSlack = await prisma.appSettings.findUnique({ where: { id: "global" } });
   const appToken = process.env.SLACK_APP_TOKEN || decryptStoredSecret(storedSlack?.slackAppTokenEncrypted);
   const botToken = process.env.SLACK_BOT_TOKEN || decryptStoredSecret(storedSlack?.slackBotTokenEncrypted);
+  global.__csSlackSocketStatus = {
+    configured: Boolean(appToken && botToken),
+    connected: false,
+    error: appToken && botToken ? null : "Both Slack tokens are required for acknowledgements.",
+    updatedAt: new Date().toISOString(),
+  };
   if (appToken && botToken) {
     const socket = new SocketModeClient({
       appToken,
     });
     const slack = new WebClient(botToken);
+    socket.on("error", (error) => {
+      global.__csSlackSocketStatus = { configured: true, connected: false, error: error?.message || "Socket Mode connection failed.", updatedAt: new Date().toISOString() };
+      console.error("Slack Socket Mode connection failed", error);
+    });
     socket.on("interactive", async ({ body, ack }) => {
       await ack();
       const action = body.actions?.[0];
@@ -181,6 +191,12 @@ app.prepare().then(async () => {
         console.error("Slack acknowledgement failed", error);
       }
     });
-    await socket.start();
+    try {
+      await socket.start();
+      global.__csSlackSocketStatus = { configured: true, connected: true, error: null, updatedAt: new Date().toISOString() };
+    } catch (error) {
+      global.__csSlackSocketStatus = { configured: true, connected: false, error: error instanceof Error ? error.message : "Socket Mode connection failed.", updatedAt: new Date().toISOString() };
+      console.error("Slack Socket Mode could not start", error);
+    }
   }
 });

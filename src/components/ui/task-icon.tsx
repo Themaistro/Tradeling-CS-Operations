@@ -18,12 +18,12 @@ function ruleFor(name: string) {
   return rules.find((rule) => rule.match.test(name)) ?? { icon: ClipboardList, tone: "bg-slate-100 text-slate-600", emoji: "📋" };
 }
 
-export function TaskIcon({ name, className = "h-9 w-9" }: { name: string; className?: string }) {
+export function TaskIcon({ name, icon, className = "h-9 w-9" }: { name: string; icon?: string | null; className?: string }) {
   const rule = ruleFor(name);
   const Icon = rule.icon;
-  return <span aria-hidden="true" className={`inline-flex shrink-0 items-center justify-center rounded-lg ${rule.tone} ${className}`}><Icon className="h-4 w-4" /></span>;
+  return <span aria-hidden="true" className={`inline-flex shrink-0 items-center justify-center rounded-lg ${rule.tone} ${className}`}>{icon && !rules.some((item) => item.match.test(name)) ? <span className="text-base">{icon}</span> : <Icon className="h-4 w-4" />}</span>;
 }
 
-export function taskEmoji(name: string) {
-  return ruleFor(name).emoji;
+export function taskEmoji(name: string, icon?: string | null) {
+  return icon || ruleFor(name).emoji;
 }

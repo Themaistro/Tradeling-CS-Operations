@@ -3,21 +3,28 @@ import { useEffect, useState } from "react";
 import { AlertTriangle, CalendarDays, CheckCircle2, ChevronLeft, ChevronRight, Download, History, LayoutGrid, List, LoaderCircle, LockOpen } from "lucide-react";
 import { PageHeading } from "@/components/ui/page-heading";
 import { OpeningHistoryDialog } from "./opening-history-dialog";
+import { requestAppConfirmation } from "@/components/ui/app-feedback";
+type ScheduleAssignment = {
+  id: string;
+  date: string;
+  status: string;
+  employee: { id: string; name: string; isBilingual: boolean };
+  shift: { id: string; name: string } | null;
+  workLocation: "OFFICE" | "WFH";
+  source?: string;
+};
+type ScheduleBreak = { id: string; date: string; employeeId: string; type: string; startTime: string; endTime: string };
 type Period = {
   status: string;
   warnings?: { date: string; shiftId: string; severity: string; code: string; message: string }[];
-  assignments: {
-    id: string;
-    date: string;
-    status: string;
-    employee: { id: string; name: string; isBilingual: boolean };
-    shift: { id: string; name: string } | null;
-    workLocation: "OFFICE" | "WFH";
-  }[];
-  breaks?: { id: string; date: string; employeeId: string; type: string; startTime: string; endTime: string }[];
+  assignments: ScheduleAssignment[];
+  breaks?: ScheduleBreak[];
+  weeklyAssignments?: ScheduleAssignment[];
+  weeklyBreaks?: ScheduleBreak[];
 } | null;
 type Shift = { id: string; name: string; startTime: string; endTime: string };
-type Assignment = NonNullable<Period>["assignments"][number];
+type Assignment = ScheduleAssignment;
+type Transition = { cutoverDate: string | null; historyWindowDays: number; eligible: boolean };
 
 function dateKey(date: Date) {
   return date.toISOString().slice(0, 10);
@@ -28,11 +35,11 @@ function readableTime(value: string) {
   return new Date(2020, 0, 1, hours, minutes).toLocaleTimeString("en", { hour: "numeric", minute: "2-digit" });
 }
 
-function assignmentTone(assignment?: Assignment) {
+function assignmentTone(assignment?: Assignment, latestShiftId?: string) {
+  if (assignment?.source === "archive-needs-replacement") return "bg-amber-50 text-amber-900 ring-1 ring-amber-300";
   if (!assignment || assignment.status === "OFF") return "bg-orange-50 text-orange-900";
   if (assignment.status !== "WORKING") return "bg-violet-50 text-violet-800";
-  const name = assignment.shift?.name.toLowerCase() ?? "";
-  return name.includes("late") || name.includes("night") ? "bg-blue-50 text-blue-900" : "bg-emerald-50 text-emerald-900";
+  return assignment.shift?.id === latestShiftId ? "bg-blue-50 text-blue-900" : "bg-emerald-50 text-emerald-900";
 }
 const statusLabels: Record<string, string> = {
   WORKING: "Working",
@@ -58,6 +65,10 @@ export default function SchedulePage() {
   const [weekIndex, setWeekIndex] = useState(0);
   const [includeTasks, setIncludeTasks] = useState(false);
   const [historyOpen, setHistoryOpen] = useState(false);
+  const [primaryLanguageLabel, setPrimaryLanguageLabel] = useState("Bilingual");
+  const [transition, setTransition] = useState<Transition | null>(null);
+  const [cutoverDate, setCutoverDate] = useState("");
+  const [savingTransition, setSavingTransition] = useState(false);
   const load = () =>
     fetch(`/api/schedule?year=${year}&month=${month}`)
       .then((r) => r.json())
@@ -70,6 +81,24 @@ export default function SchedulePage() {
   useEffect(() => {
     void fetch("/api/shifts").then((response) => response.json()).then(setShifts);
   }, []);
+  useEffect(() => {
+    void fetch("/api/settings")
+      .then((response) => response.json())
+      .then((data) => setPrimaryLanguageLabel(data.settings?.primaryLanguageLabel || "Bilingual"));
+  }, []);
+  useEffect(() => {
+    void fetch("/api/schedule/transition")
+      .then((response) => response.json())
+      .then((data: Transition) => { setTransition(data); setCutoverDate(data.cutoverDate ?? ""); });
+  }, []);
+  async function saveTransition() {
+    setSavingTransition(true);
+    const response = await fetch("/api/schedule/transition", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ cutoverDate: cutoverDate || null }) });
+    const body = await response.json();
+    setMessage(response.ok ? (body.cutoverDate ? `Initial transition set for ${body.cutoverDate}. Save the previous history, then generate that month.` : "Initial transition cleared.") : body.error || "The transition date could not be saved.");
+    if (response.ok) setTransition((current) => current ? { ...current, cutoverDate: body.cutoverDate } : current);
+    setSavingTransition(false);
+  }
   async function generate() {
     setLoading(true);
     const r = await fetch("/api/schedule", {
@@ -96,7 +125,7 @@ export default function SchedulePage() {
     const body = await r.json();
     if (!r.ok && body.code === "COVERAGE_BLOCKED") {
       setLoading(false);
-      if (confirm(`${body.shortages.length} coverage issue(s) remain. Approve with an explicit coverage exception?`)) await approve(true);
+      if (await requestAppConfirmation({ title: "Approve with a coverage exception?", message: `${body.shortages.length} coverage issue(s) remain. You can approve this schedule only if you have reviewed and accepted the exception.`, confirmLabel: "Approve schedule" })) await approve(true);
       return;
     }
     if (r.ok) {
@@ -144,7 +173,9 @@ export default function SchedulePage() {
   const working =
     period?.assignments.filter((a) => a.status === "WORKING") ?? [];
   const grouped = Object.groupBy(period?.assignments ?? [], (a) => a.date.slice(0, 10));
-  const employees = Array.from(new Map((period?.assignments ?? []).map((assignment) => [assignment.employee.id, assignment.employee])).values()).sort((a, b) => a.name.localeCompare(b.name));
+  const weeklyAssignments = period?.weeklyAssignments ?? period?.assignments ?? [];
+  const weeklyBreaks = period?.weeklyBreaks ?? period?.breaks ?? [];
+  const employees = Array.from(new Map([...(period?.assignments ?? []), ...weeklyAssignments].map((assignment) => [assignment.employee.id, assignment.employee])).values()).sort((a, b) => a.name.localeCompare(b.name));
   const firstDay = new Date(Date.UTC(year, month - 1, 1));
   const lastDay = new Date(Date.UTC(year, month, 0));
   const gridStart = new Date(firstDay);
@@ -155,19 +186,34 @@ export default function SchedulePage() {
     Array.from({ length: 7 }, (__, day) => new Date(gridStart.getTime() + (index * 7 + day) * 86400000)),
   );
   const selectedWeek = weeks[Math.min(weekIndex, Math.max(0, weeks.length - 1))] ?? [];
-  const rosterSections = ["Day · Arabic", "Day · Other", "Late · Arabic", "Late · Other"].map((label) => {
-    const late = label.startsWith("Late");
-    const bilingual = label.endsWith("Arabic");
-    return {
-      label,
-      employees: employees.filter((employee) => {
-        const weekAssignments = period?.assignments.filter((item) => item.employee.id === employee.id && selectedWeek.some((day) => dateKey(day) === item.date.slice(0, 10)) && item.status === "WORKING") ?? [];
-        const lateDays = weekAssignments.filter((item) => /late|night/i.test(item.shift?.name ?? "")).length;
-        const isLate = lateDays > weekAssignments.length / 2;
-        return isLate === late && employee.isBilingual === bilingual;
-      }),
-    };
-  }).filter((section) => section.employees.length);
+  const visibleWeeks = [selectedWeek];
+  const visibleDays = selectedWeek;
+  const shiftsByStart = [...shifts].sort((left, right) => left.startTime.localeCompare(right.startTime));
+  const dayShift = shiftsByStart[0];
+  const latestShift = shiftsByStart.at(-1);
+  const dominantShiftFor = (employeeId: string) => {
+    const counts = new Map<string, number>();
+    for (const assignment of weeklyAssignments) {
+      if (assignment.employee.id !== employeeId || assignment.status !== "WORKING" || !assignment.shift?.id || !visibleDays.some((day) => dateKey(day) === assignment.date.slice(0, 10))) continue;
+      counts.set(assignment.shift.id, (counts.get(assignment.shift.id) ?? 0) + 1);
+    }
+    return [...counts.entries()].sort((left, right) => right[1] - left[1] || shiftsByStart.findIndex((shift) => shift.id === left[0]) - shiftsByStart.findIndex((shift) => shift.id === right[0]))[0]?.[0] ?? null;
+  };
+  const rosterSectionDefinitions = [
+    ...shiftsByStart.flatMap((shift) => [
+      { label: `${shift.name} · ${primaryLanguageLabel}`, shiftId: shift.id, bilingual: true },
+      { label: `${shift.name} · Other`, shiftId: shift.id, bilingual: false },
+    ]),
+    { label: "Not scheduled this week", shiftId: null, bilingual: null },
+  ];
+  const rosterSections = rosterSectionDefinitions.map((section) => ({
+    label: section.label,
+    employees: employees.filter((employee) => {
+      const dominantShiftId = dominantShiftFor(employee.id);
+      if (!section.shiftId) return !dominantShiftId;
+      return dominantShiftId === section.shiftId && employee.isBilingual === section.bilingual;
+    }),
+  })).filter((section) => section.employees.length);
   return (
     <div className="mx-auto max-w-7xl">
       <PageHeading
@@ -175,6 +221,21 @@ export default function SchedulePage() {
         title="Schedule Generator"
         description="Generate, review, and approve the monthly roster before using it in daily operations."
       />
+      {transition?.eligible && (
+        <section className="mb-6 rounded-2xl border border-blue-200 bg-blue-50 p-5">
+          <div className="flex flex-col gap-4 md:flex-row md:items-end md:justify-between">
+            <div>
+              <p className="text-sm font-bold text-blue-950">Initial transition</p>
+              <p className="mt-1 max-w-2xl text-sm leading-6 text-blue-800">Use this once when moving from the manual roster. The first schedule will begin on this date, and the previous {transition.historyWindowDays} days will be used as the handover history. After that schedule is approved, the system returns to normal monthly planning.</p>
+            </div>
+            <div className="flex flex-wrap items-end gap-2">
+              <label className="text-xs font-bold text-blue-900">First system-managed date<input type="date" value={cutoverDate} onChange={(event) => setCutoverDate(event.target.value)} className="mt-1 block rounded-xl border border-blue-200 bg-white px-3 py-2 text-sm text-slate-900" /></label>
+              <button type="button" disabled={savingTransition} onClick={() => void saveTransition()} className="rounded-xl bg-blue-700 px-4 py-2.5 text-sm font-bold text-white disabled:opacity-60">{savingTransition ? "Saving…" : "Save cutover date"}</button>
+            </div>
+          </div>
+          {transition.cutoverDate && <div className="mt-4 rounded-xl border border-blue-200 bg-white/70 px-4 py-3 text-sm text-blue-900">Transition is ready for <b>{transition.cutoverDate}</b>. Select that month, open <b>Previous history</b>, then generate the remaining schedule.</div>}
+        </section>
+      )}
       <div className="mb-6 rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
         <div className="grid gap-4 md:grid-cols-[minmax(180px,1fr)_140px_auto] md:items-end">
         <label className="text-sm font-semibold">
@@ -267,7 +328,7 @@ export default function SchedulePage() {
             </div>
             {view === "weekly" && <div className="flex items-center gap-2">
               <button aria-label="Previous week" disabled={weekIndex === 0} onClick={() => setWeekIndex((value) => Math.max(0, value - 1))} className="rounded-lg border border-slate-200 p-2 text-slate-600 disabled:opacity-30"><ChevronLeft className="h-4 w-4" /></button>
-              <span className="min-w-44 text-center text-sm font-bold text-slate-700">{selectedWeek[0]?.toLocaleDateString("en", { month: "short", day: "numeric", timeZone: "UTC" })} – {selectedWeek[6]?.toLocaleDateString("en", { month: "short", day: "numeric", year: "numeric", timeZone: "UTC" })}</span>
+              <span className="min-w-44 text-center text-sm font-bold text-slate-700">{selectedWeek[0]?.toLocaleDateString("en", { month: "short", day: "numeric", timeZone: "UTC" })} – {selectedWeek.at(-1)?.toLocaleDateString("en", { month: "short", day: "numeric", year: "numeric", timeZone: "UTC" })}</span>
               <button aria-label="Next week" disabled={weekIndex >= weeks.length - 1} onClick={() => setWeekIndex((value) => Math.min(weeks.length - 1, value + 1))} className="rounded-lg border border-slate-200 p-2 text-slate-600 disabled:opacity-30"><ChevronRight className="h-4 w-4" /></button>
             </div>}
           </div>
@@ -288,36 +349,38 @@ export default function SchedulePage() {
               {period.warnings.length > 12 && <p className="mt-3 text-xs font-semibold text-amber-800">Showing the first 12 issues. Adjust staffing rules or assignments and refresh the schedule to review the remainder.</p>}
             </section>
           )}
-          {view === "weekly" ? <div className="overflow-x-auto rounded-2xl border border-slate-200 bg-white shadow-sm">
-            <table className="min-w-[1080px] w-full border-collapse text-sm">
+          {view === "weekly" ? <div className="space-y-4">
+            {visibleWeeks.map((weekDays, weekPosition) => <section key={dateKey(weekDays[0])} className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
+            <table className="w-full table-fixed border-collapse text-xs sm:text-sm">
               <thead>
                 <tr className="bg-slate-950 text-white">
-                  <th className="sticky left-0 z-20 w-48 min-w-48 border-r border-slate-700 bg-slate-950 px-4 py-4 text-left">Team member</th>
-                  {selectedWeek.map((day) => <th key={dateKey(day)} className={`min-w-32 border-r border-slate-700 px-3 py-3 text-center ${day.getUTCMonth() !== month - 1 ? "text-slate-500" : ""}`}><span className="block text-xs uppercase tracking-wider">{day.toLocaleDateString("en", { weekday: "short", timeZone: "UTC" })}</span><span className="mt-1 block text-base">{day.toLocaleDateString("en", { month: "short", day: "numeric", timeZone: "UTC" })}</span></th>)}
+                  <th className="w-32 border-r border-slate-700 bg-slate-950 px-2 py-3 text-left sm:w-44 sm:px-4">Team member</th>
+                  {weekDays.map((day) => <th key={dateKey(day)} className={`border-r border-slate-700 px-1 py-2 text-center sm:px-3 sm:py-3 ${day.getUTCMonth() !== month - 1 ? "text-slate-300" : ""}`}><span className="block text-[10px] uppercase tracking-wider sm:text-xs">{day.toLocaleDateString("en", { weekday: "short", timeZone: "UTC" })}</span><span className="mt-1 block text-xs sm:text-base">{day.toLocaleDateString("en", { month: "short", day: "numeric", timeZone: "UTC" })}</span></th>)}
                 </tr>
               </thead>
               <tbody>
                 {rosterSections.flatMap((section) => [
-                  <tr key={`section-${section.label}`} className="border-t border-slate-200 bg-slate-100"><th colSpan={8} className="px-4 py-2 text-left text-xs font-extrabold uppercase tracking-wider text-slate-500">{section.label}</th></tr>,
+                  <tr key={`section-${section.label}`} className="border-t border-slate-200 bg-slate-100"><th colSpan={weekDays.length + 1} className="px-3 py-2 text-left text-[10px] font-extrabold uppercase tracking-wider text-slate-500 sm:px-4 sm:text-xs">{section.label}</th></tr>,
                   ...section.employees.map((employee) => <tr key={employee.id} className="border-t border-slate-200">
-                  <th className="sticky left-0 z-10 border-r border-slate-200 bg-white px-4 py-4 text-left font-bold text-slate-900">{employee.name}</th>
-                  {selectedWeek.map((day) => {
+                  <th className="border-r border-slate-200 bg-white px-2 py-3 text-left text-xs font-bold text-slate-900 sm:px-4 sm:py-4 sm:text-sm">{employee.name}</th>
+                  {weekDays.map((day) => {
                     const key = dateKey(day);
-                    const assignment = period.assignments.find((item) => item.employee.id === employee.id && item.date.slice(0, 10) === key);
-                    const breaks = period.breaks?.filter((item) => item.employeeId === employee.id && item.date.slice(0, 10) === key) ?? [];
+                    const assignment = weeklyAssignments.find((item) => item.employee.id === employee.id && item.date.slice(0, 10) === key);
+                    const breaks = weeklyBreaks.filter((item) => item.employeeId === employee.id && item.date.slice(0, 10) === key);
                     const outside = day.getUTCMonth() !== month - 1;
-                    return <td key={key} className={`border-r border-slate-200 p-1 align-middle ${outside ? "bg-slate-50" : ""}`}>
-                      {outside ? <div className="min-h-20" /> : <div className={`flex min-h-20 flex-col items-center justify-center rounded-lg px-2 py-3 text-center ${assignmentTone(assignment)}`}>
-                        {!assignment || assignment.status === "OFF" ? <b>OFF</b> : assignment.status !== "WORKING" ? <><b>{statusLabels[assignment.status] ?? assignment.status}</b><span className="mt-1 text-xs opacity-70">Not scheduled</span></> : <><b>{assignment.shift?.name ?? "Working"}</b>{assignment.shift && <span className="mt-1 text-xs">{readableTime(shifts.find((shift) => shift.id === assignment.shift?.id)?.startTime ?? "09:00")} – {readableTime(shifts.find((shift) => shift.id === assignment.shift?.id)?.endTime ?? "18:00")}</span>}{breaks.map((item) => <span key={item.id} className="mt-1 text-[11px] font-semibold opacity-75">Break {readableTime(item.startTime)}–{readableTime(item.endTime)}</span>)}</>}
-                        {assignment?.status === "WORKING" && (period.status === "DRAFT" ? <button onClick={() => void editAssignment(assignment.id, assignment.status, assignment.shift?.id, assignment.workLocation === "WFH" ? "OFFICE" : "WFH")} className={`mt-2 rounded-md px-2 py-1 text-[10px] font-extrabold ${assignment.workLocation === "WFH" ? "bg-blue-600 text-white" : "bg-white/70 text-slate-500 ring-1 ring-slate-300"}`}>{assignment.workLocation === "WFH" ? "WFH" : "Office"}</button> : assignment.workLocation === "WFH" ? <span className="mt-2 rounded-md bg-blue-600 px-2 py-1 text-[10px] font-extrabold text-white">WFH</span> : null)}
-                      </div>}
+                    return <td key={key} className={`border-r border-slate-200 p-0.5 align-middle sm:p-1 ${outside ? "bg-slate-50" : ""}`}>
+                      <div className={`flex min-h-16 flex-col items-center justify-center rounded-md px-1 py-2 text-center text-[10px] sm:min-h-20 sm:rounded-lg sm:px-2 sm:py-3 sm:text-sm ${assignment ? assignmentTone(assignment, latestShift?.id) : outside ? "bg-slate-100 text-slate-500" : assignmentTone(assignment, latestShift?.id)} `}>
+                        {assignment?.source === "archive-needs-replacement" ? <><b>Replacement needed</b><span className="mt-1 text-[10px] opacity-70 sm:text-xs">Agent archived</span></> : !assignment ? outside ? <><b>No schedule yet</b><span className="mt-1 text-[10px] opacity-70 sm:text-xs">Generate this month to continue</span></> : <b>OFF</b> : assignment.status === "OFF" ? <b>OFF</b> : assignment.status !== "WORKING" ? <><b>{statusLabels[assignment.status] ?? assignment.status}</b><span className="mt-1 text-[10px] opacity-70 sm:text-xs">Not scheduled</span></> : <><b className="line-clamp-2">{assignment.shift?.name ?? "Working"}</b>{assignment.shift && <span className="mt-1 hidden text-[10px] sm:block sm:text-xs">{readableTime(shifts.find((shift) => shift.id === assignment.shift?.id)?.startTime ?? "09:00")} – {readableTime(shifts.find((shift) => shift.id === assignment.shift?.id)?.endTime ?? "18:00")}</span>}{breaks.map((item) => <span key={item.id} className="mt-1 hidden text-[11px] font-semibold opacity-75 sm:block">Break {readableTime(item.startTime)}–{readableTime(item.endTime)}</span>)}</>}
+                        {assignment?.status === "WORKING" && (!outside && period.status === "DRAFT" ? <button onClick={() => void editAssignment(assignment.id, assignment.status, assignment.shift?.id, assignment.workLocation === "WFH" ? "OFFICE" : "WFH")} className={`mt-2 rounded-md px-2 py-1 text-[10px] font-extrabold ${assignment.workLocation === "WFH" ? "bg-blue-600 text-white" : "bg-white/70 text-slate-500 ring-1 ring-slate-300"}`}>{assignment.workLocation === "WFH" ? "WFH" : "Office"}</button> : assignment.workLocation === "WFH" ? <span className="mt-2 rounded-md bg-blue-600 px-2 py-1 text-[10px] font-extrabold text-white">WFH</span> : null)}
+                      </div>
                     </td>;
                   })}
                 </tr>),
                 ])}
               </tbody>
             </table>
-            <div className="flex flex-wrap gap-4 border-t border-slate-200 px-4 py-3 text-xs font-semibold text-slate-600"><span><i className="mr-2 inline-block h-3 w-3 rounded bg-emerald-100" />Day shift</span><span><i className="mr-2 inline-block h-3 w-3 rounded bg-blue-100" />Late shift</span><span><i className="mr-2 inline-block h-3 w-3 rounded bg-orange-100" />Off</span><span><i className="mr-2 inline-block h-3 w-3 rounded bg-violet-100" />Leave</span></div>
+            {weekPosition === visibleWeeks.length - 1 && <div className="flex flex-wrap gap-4 border-t border-slate-200 px-4 py-3 text-xs font-semibold text-slate-600"><span><i className="mr-2 inline-block h-3 w-3 rounded bg-emerald-100" />{dayShift?.name ?? "First"} shift</span><span><i className="mr-2 inline-block h-3 w-3 rounded bg-blue-100" />{latestShift?.name ?? "Last"} shift</span><span><i className="mr-2 inline-block h-3 w-3 rounded bg-orange-100" />Off</span><span><i className="mr-2 inline-block h-3 w-3 rounded bg-violet-100" />Leave</span></div>}
+            </section>)}
           </div> : <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
             {Object.entries(grouped).map(([date, items]) => (
               <article
@@ -378,7 +441,7 @@ export default function SchedulePage() {
           </div>}
         </div>
       )}
-      {historyOpen && <OpeningHistoryDialog year={year} month={month} onClose={() => setHistoryOpen(false)} onSaved={() => setMessage("Previous history saved. The next schedule generation will continue from this handover.")} />}
+      {historyOpen && <OpeningHistoryDialog year={year} month={month} primaryLanguageLabel={primaryLanguageLabel} onClose={() => setHistoryOpen(false)} onSaved={() => setMessage("Previous history saved. The next schedule generation will continue from this handover.")} />}
     </div>
   );
 }

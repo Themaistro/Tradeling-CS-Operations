@@ -12,6 +12,7 @@ type Input = {
   weekStartsOn?: number;
   priorAssignments?: Record<string, PriorScheduleEntry[]>;
   variationSeed?: number;
+  startDate?: string;
 };
 
 function variationRank(seed: number, value: string) {
@@ -61,7 +62,9 @@ function isWorking(status: GeneratedAssignment["status"]) {
 }
 
 export function generateSchedule(input: Input) {
-  const first = startOfMonth(new Date(input.year, input.month - 1, 1));
+  const monthStart = startOfMonth(new Date(input.year, input.month - 1, 1));
+  const requestedStart = input.startDate ? new Date(`${input.startDate}T12:00:00`) : monthStart;
+  const first = requestedStart > monthStart ? requestedStart : monthStart;
   const days = eachDayOfInterval({ start: first, end: endOfMonth(first) });
   const assignments: GeneratedAssignment[] = [];
   const warnings: ScheduleWarning[] = [];
@@ -112,7 +115,7 @@ export function generateSchedule(input: Input) {
     lateCount.set(employee.id, priorLate.length);
     weekendLateCount.set(employee.id, priorLate.filter((entry) => [0, 6].includes(new Date(`${entry.date}T12:00:00`).getDay())).length);
 
-    let recoveryCursor = new Date(yesterday);
+    const recoveryCursor = new Date(yesterday);
     let recoveryDaysTaken = 0;
     while (history.get(format(recoveryCursor, "yyyy-MM-dd")) && !isWorking(history.get(format(recoveryCursor, "yyyy-MM-dd"))!.status)) {
       recoveryDaysTaken += 1;
@@ -195,6 +198,106 @@ export function generateSchedule(input: Input) {
         const leave = leaves.get(employee.id);
         assignments.push({ employeeId: employee.id, date: dateKey, status: leave ? leaveStatus(leave.type) : "OFF", shiftId: null });
       }
+    }
+  }
+
+  // A cutover can begin in the middle of a scheduling week. In that case the
+  // earlier handover days count toward each person's weekly limit, so a simple
+  // day-by-day pass can spend all remaining capacity before the weekend. Repair
+  // a shortage by swapping equivalent work within the same week: one person
+  // covers the missing slot while an under-utilised colleague takes one of
+  // their earlier shifts. Leave is never changed by this repair.
+  const employeeById = new Map(input.employees.map((employee) => [employee.id, employee]));
+  const maximumWeeklyDays = input.maxWeeklyDays ?? 5;
+  const assignmentFor = (employeeId: string, date: string) => assignments.find((assignment) => assignment.employeeId === employeeId && assignment.date === date);
+  const weeklyWorkCount = (employeeId: string, weekKey: string) => [
+    ...(input.priorAssignments?.[employeeId] ?? []),
+    ...assignments.filter((assignment) => assignment.employeeId === employeeId),
+  ].filter((assignment) => assignment.status === "WORKING" && weekKeyFor(new Date(`${assignment.date}T12:00:00`)) === weekKey).length;
+  const canCoverShift = (employeeId: string, shift: ScheduleShift, weekday: number) => {
+    const employee = employeeById.get(employeeId);
+    return Boolean(employee && (shift.requiredAccountIdsByDay[weekday] ?? []).every((accountId) => employee.accountIds.includes(accountId)));
+  };
+  const respectsConsecutiveLimit = (employeeId: string, changes: Map<string, GeneratedAssignment["status"]>) => {
+    const statuses = new Map<string, GeneratedAssignment["status"]>();
+    for (const entry of input.priorAssignments?.[employeeId] ?? []) statuses.set(entry.date, entry.status);
+    for (const entry of assignments.filter((assignment) => assignment.employeeId === employeeId)) statuses.set(entry.date, entry.status);
+    for (const [date, status] of changes) statuses.set(date, status);
+    const orderedDates = [...statuses.keys()].sort();
+    if (!orderedDates.length) return true;
+    const cursor = new Date(`${orderedDates[0]}T12:00:00`);
+    const end = new Date(`${orderedDates.at(-1)}T12:00:00`);
+    let run = 0;
+    while (cursor <= end) {
+      const status = statuses.get(format(cursor, "yyyy-MM-dd"));
+      run = status === "WORKING" ? run + 1 : 0;
+      if (run > input.maxConsecutiveDays) return false;
+      cursor.setDate(cursor.getDate() + 1);
+    }
+    return true;
+  };
+  for (const date of days) {
+    const dateKey = format(date, "yyyy-MM-dd");
+    const weekday = date.getDay();
+    const weekKey = weekKeyFor(date);
+    for (const shift of input.shifts) {
+      const required = shift.minimumByDay[weekday] ?? 0;
+      while (assignments.filter((assignment) => assignment.date === dateKey && assignment.status === "WORKING" && assignment.shiftId === shift.id).length < required) {
+        const direct = input.employees.find((employee) => {
+          const current = assignmentFor(employee.id, dateKey);
+          return current?.status === "OFF" && weeklyWorkCount(employee.id, weekKey) < maximumWeeklyDays && canCoverShift(employee.id, shift, weekday) && respectsConsecutiveLimit(employee.id, new Map([[dateKey, "WORKING"]]));
+        });
+        if (direct) {
+          const current = assignmentFor(direct.id, dateKey)!;
+          current.status = "WORKING";
+          current.shiftId = shift.id;
+          continue;
+        }
+
+        let repaired = false;
+        for (const cover of input.employees) {
+          const missingDay = assignmentFor(cover.id, dateKey);
+          if (missingDay?.status !== "OFF" || !canCoverShift(cover.id, shift, weekday)) continue;
+          const donorDays = assignments.filter((assignment) => assignment.employeeId === cover.id && assignment.status === "WORKING" && weekKeyFor(new Date(`${assignment.date}T12:00:00`)) === weekKey);
+          for (const donor of donorDays) {
+            const donorWeekday = new Date(`${donor.date}T12:00:00`).getDay();
+            const donorShift = input.shifts.find((candidate) => candidate.id === donor.shiftId);
+            if (!donorShift) continue;
+            const relief = input.employees.find((employee) => {
+              const reliefDay = assignmentFor(employee.id, donor.date);
+              return employee.id !== cover.id && reliefDay?.status === "OFF" && weeklyWorkCount(employee.id, weekKey) < maximumWeeklyDays && canCoverShift(employee.id, donorShift, donorWeekday) && respectsConsecutiveLimit(employee.id, new Map([[donor.date, "WORKING"]]));
+            });
+            if (!relief) continue;
+            const coverChanges = new Map<string, GeneratedAssignment["status"]>([[dateKey, "WORKING"], [donor.date, "OFF"]]);
+            if (!respectsConsecutiveLimit(cover.id, coverChanges)) continue;
+            const reliefDay = assignmentFor(relief.id, donor.date)!;
+            missingDay.status = "WORKING";
+            missingDay.shiftId = shift.id;
+            donor.status = "OFF";
+            donor.shiftId = null;
+            reliefDay.status = "WORKING";
+            reliefDay.shiftId = donorShift.id;
+            repaired = true;
+            break;
+          }
+          if (repaired) break;
+        }
+        if (!repaired) break;
+      }
+    }
+  }
+  const retainedWarnings = warnings.filter((warning) => warning.code !== "STAFF_SHORTAGE" && warning.code !== "BILINGUAL_SHORTAGE");
+  warnings.splice(0, warnings.length, ...retainedWarnings);
+  for (const date of days) {
+    const dateKey = format(date, "yyyy-MM-dd");
+    const weekday = date.getDay();
+    for (const shift of input.shifts) {
+      const required = shift.minimumByDay[weekday] ?? 0;
+      const requiredBilingual = shift.bilingualByDay[weekday] ?? 0;
+      const staffed = assignments.filter((assignment) => assignment.date === dateKey && assignment.status === "WORKING" && assignment.shiftId === shift.id);
+      if (staffed.length < required) warnings.push({ date: dateKey, shiftId: shift.id, severity: "critical", code: "STAFF_SHORTAGE", message: `${shift.name} needs ${required - staffed.length} more team member(s).` });
+      const bilingual = staffed.filter((assignment) => employeeById.get(assignment.employeeId)?.isBilingual).length;
+      if (bilingual < requiredBilingual) warnings.push({ date: dateKey, shiftId: shift.id, severity: "critical", code: "BILINGUAL_SHORTAGE", message: `${shift.name} needs ${requiredBilingual - bilingual} more bilingual team member(s).` });
     }
   }
   return { assignments, warnings };

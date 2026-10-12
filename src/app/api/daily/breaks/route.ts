@@ -12,7 +12,7 @@ export async function POST(request: Request) {
   if (end <= start) return NextResponse.json({ error: "Break end time must be after the start time." }, { status: 400 });
   const date = new Date(`${input.date}T00:00:00.000Z`);
   const [assignments, existingBreaks, settings] = await Promise.all([
-    prisma.shiftAssignment.findMany({ where: { date, status: "WORKING", schedulePeriod: { status: { in: ["APPROVED", "PUBLISHED"] } } }, include: { shift: true } }),
+    prisma.shiftAssignment.findMany({ where: { date, status: "WORKING", employee: { status: "ACTIVE" }, schedulePeriod: { status: { in: ["APPROVED", "PUBLISHED"] } } }, include: { shift: true } }),
     prisma.breakSchedule.findMany({ where: { date } }),
     prisma.appSettings.upsert({ where: { id: "global" }, create: { id: "global" }, update: {} }),
   ]);
@@ -21,6 +21,15 @@ export async function POST(request: Request) {
   if (input.startTime < working.shift.startTime || input.endTime > working.shift.endTime) return NextResponse.json({ error: `Break must be within the ${working.shift.startTime}–${working.shift.endTime} shift.` }, { status: 400 });
   const expected = input.type === "MAIN" ? settings.mainBreakMinutes : settings.shortBreakMinutes;
   if (end - start !== expected) return NextResponse.json({ error: `${input.type === "MAIN" ? "Main" : "Short"} break must be exactly ${expected} minutes.` }, { status: 400 });
+  const otherBreak = existingBreaks.find((item) => item.employeeId === input.employeeId && item.type !== input.type);
+  if (input.type === "SHORT" && !otherBreak) return NextResponse.json({ error: "Save the main break before adding the short break." }, { status: 409 });
+  if (otherBreak) {
+    const otherStart = toMinutes(otherBreak.startTime); const otherEnd = toMinutes(otherBreak.endTime);
+    if (start < otherEnd && end > otherStart) return NextResponse.json({ error: "An employee's main and short breaks cannot overlap." }, { status: 409 });
+    const mainEnd = input.type === "MAIN" ? end : otherEnd;
+    const shortStart = input.type === "SHORT" ? start : otherStart;
+    if (shortStart < mainEnd + settings.shortBreakDelayMinutes) return NextResponse.json({ error: `Keep the short break at least ${settings.shortBreakDelayMinutes} minutes after the main break.` }, { status: 409 });
+  }
   const gap = settings.breakGapMinutes;
   const concurrentMainBreaks = input.type === "MAIN" ? existingBreaks.filter((item) => item.type === "MAIN" && item.employeeId !== input.employeeId && toMinutes(item.startTime) < end + gap && toMinutes(item.endTime) + gap > start).length : 0;
   if (concurrentMainBreaks >= settings.maxConcurrentMainBreaks) return NextResponse.json({ error: `A maximum of ${settings.maxConcurrentMainBreaks} agents can share a main-break slot. Keep ${gap} minutes between break groups.` }, { status: 409 });

@@ -19,10 +19,15 @@ export async function GET(request:Request){
   if(!dateValue)return NextResponse.json({error:"A date is required."},{status:400});
   const date=day(dateValue);
   const [assignments,categories,breaks,tasks]=await Promise.all([
-    prisma.shiftAssignment.findMany({where:{date,status:"WORKING",schedulePeriod:{status:{in:["APPROVED","PUBLISHED"]}}},include:{employee:true,shift:true},orderBy:{employee:{name:"asc"}}}),
-    prisma.taskCategory.findMany({where:{active:true},orderBy:{order:"asc"}}),
+    prisma.shiftAssignment.findMany({where:{date,status:"WORKING",schedulePeriod:{status:{in:["APPROVED","PUBLISHED"]}}},include:{employee:{include:{accountCapabilities:true}},shift:true},orderBy:{employee:{name:"asc"}}}),
+    prisma.taskCategory.findMany({where:{active:true},include:{account:{include:{operatingWindows:true}}},orderBy:{order:"asc"}}),
     prisma.breakSchedule.findMany({where:{date}}),
     prisma.taskAssignment.findMany({where:{date},include:{category:true}}),
   ]);
-  return NextResponse.json({date:dateValue,assignments,categories,breaks,tasks});
+  const weekday=date.getUTCDay();
+  const dailyAssignments=assignments.map((assignment)=>({
+    ...assignment,
+    availableCategories:categories.filter((category)=>!category.accountId||Boolean(category.account?.active&&assignment.employee.accountCapabilities.some((capability)=>capability.accountId===category.accountId)&&assignment.shift&&category.account.operatingWindows.some((window)=>window.dayOfWeek===weekday&&assignment.shift!.startTime<window.endTime&&assignment.shift!.endTime>window.startTime))).map((category)=>({id:category.id,name:category.name,icon:category.icon,defaultPriority:category.defaultPriority,accountName:category.account?.name??null})),
+  }));
+  return NextResponse.json({date:dateValue,assignments:dailyAssignments,categories:categories.map((category)=>({id:category.id,name:category.name,icon:category.icon,defaultPriority:category.defaultPriority,accountName:category.account?.name??null})),breaks,tasks});
 }

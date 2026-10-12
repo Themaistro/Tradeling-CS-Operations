@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
+import { useEffect, useState } from "react";
 import {
   BarChart3,
   CalendarDays,
@@ -13,11 +14,12 @@ import {
   Building2,
   Users,
 } from "lucide-react";
+import { AppFeedbackHost, showAppNotification } from "@/components/ui/app-feedback";
 
 const navigation = [
-  { href: "/operations", label: "Operations", icon: Building2 },
-  { href: "/team", label: "Team", icon: Users },
   { href: "/overview", label: "Overview", icon: BarChart3 },
+  { href: "/team", label: "Team", icon: Users },
+  { href: "/operations", label: "Operations", icon: Building2 },
   { href: "/schedule", label: "Schedule", icon: CalendarDays },
   { href: "/tasks", label: "Daily Tasks", icon: ClipboardList },
   { href: "/settings", label: "Settings", icon: Settings },
@@ -26,6 +28,21 @@ const navigation = [
 export function AppShell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
   const router = useRouter();
+  const [identity, setIdentity] = useState({ organizationName: "Tradeling", workspaceName: "Customer Service Operations" });
+
+  useEffect(() => {
+    const loadIdentity = () => fetch("/api/settings")
+      .then((response) => response.ok ? response.json() : null)
+      .then((data) => {
+        if (data?.settings?.organizationName && data?.settings?.workspaceName) {
+          setIdentity({ organizationName: data.settings.organizationName, workspaceName: data.settings.workspaceName });
+        }
+      })
+      .catch(() => undefined);
+    void loadIdentity();
+    window.addEventListener("cs-identity-updated", loadIdentity);
+    return () => window.removeEventListener("cs-identity-updated", loadIdentity);
+  }, []);
 
   async function signOut() {
     await fetch("/api/auth", { method: "DELETE" });
@@ -34,27 +51,23 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   }
 
   async function postTodayToSlack() {
-    const date = new Intl.DateTimeFormat("en-CA", {
-      timeZone: "Asia/Dubai",
-      year: "numeric",
-      month: "2-digit",
-      day: "2-digit",
-    }).format(new Date());
     const response = await fetch("/api/slack/post", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ date }),
+      // The server determines "today" using the timezone configured in Settings.
+      body: JSON.stringify({}),
     });
     const result = await response.json();
     const directMessages = result.directMessages;
     const deliverySummary = directMessages
       ? ` ${directMessages.sent} personal briefing${directMessages.sent === 1 ? " was" : "s were"} delivered.${directMessages.failed || directMessages.skipped ? ` ${directMessages.failed + directMessages.skipped} could not be delivered; check those agents’ Slack member IDs and the bot’s im:write permission.` : ""}`
       : "";
-    alert(
-      response.ok
+    showAppNotification({
+      kind: response.ok ? "success" : "error",
+      message: response.ok
         ? `Today’s team briefing was posted to Slack.${deliverySummary}`
         : result.error || "Slack posting failed.",
-    );
+    });
   }
 
   return (
@@ -98,14 +111,15 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         </div>
       </aside>
 
+      <AppFeedbackHost />
       <div className="lg:pl-72">
         <header className="sticky top-0 z-20 flex h-18 items-center justify-between border-b border-slate-200/80 bg-white/90 px-5 backdrop-blur-xl md:px-8">
           <div>
             <p className="text-xs font-semibold uppercase tracking-[0.18em] text-orange-500">
-              Tradeling
+              {identity.organizationName}
             </p>
             <p className="text-sm font-semibold text-slate-700">
-              Customer Service Operations
+              {identity.workspaceName}
             </p>
           </div>
           <div className="flex items-center gap-3">

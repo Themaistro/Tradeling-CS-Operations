@@ -13,6 +13,7 @@ import {
   X,
 } from "lucide-react";
 import { PageHeading } from "@/components/ui/page-heading";
+import { requestAppConfirmation } from "@/components/ui/app-feedback";
 type Shift = { id: string; name: string };
 type Leave = {
   date: string;
@@ -46,6 +47,7 @@ export default function TeamPage() {
   const [employees, setEmployees] = useState<Employee[]>([]);
   const [archivedEmployees, setArchivedEmployees] = useState<Employee[]>([]);
   const [shifts, setShifts] = useState<Shift[]>([]);
+  const [primaryLanguageLabel, setPrimaryLanguageLabel] = useState("Bilingual");
   const [selected, setSelected] = useState<Employee | null>(null);
   const [pendingPermanentDelete, setPendingPermanentDelete] = useState<Employee | null>(null);
   const [deleting, setDeleting] = useState(false);
@@ -60,6 +62,7 @@ export default function TeamPage() {
     setEmployees(e);
     setArchivedEmployees(archived);
     setShifts(s.shifts);
+    setPrimaryLanguageLabel(s.settings?.primaryLanguageLabel || "Bilingual");
     setLoading(false);
   }
   useEffect(() => {
@@ -71,6 +74,7 @@ export default function TeamPage() {
       setEmployees(e);
       setArchivedEmployees(archived);
       setShifts(s.shifts);
+      setPrimaryLanguageLabel(s.settings?.primaryLanguageLabel || "Bilingual");
       setLoading(false);
     });
   }, []);
@@ -94,14 +98,15 @@ export default function TeamPage() {
     }
   }
   async function archive(id: string) {
-    if (
-      !confirm(
-        "Remove this employee from the active team? Schedule history will be kept.",
-      )
-    )
+    if (!await requestAppConfirmation({ title: "Archive this employee?", message: "Their past history will be kept. Any future shifts will be marked for replacement and the affected schedule will reopen for review.", confirmLabel: "Archive employee", destructive: true })) return;
+    const response = await fetch(`/api/team/${id}`, { method: "DELETE" });
+    const body = await response.json();
+    if (!response.ok) {
+      setMessage(body.error || "The employee could not be archived.");
       return;
-    await fetch(`/api/team/${id}`, { method: "DELETE" });
+    }
     setSelected(null);
+    setMessage(body.replacementsRequired ? `Employee archived. ${body.replacementsRequired} future shift${body.replacementsRequired === 1 ? " needs" : "s need"} replacement. The affected schedule month${body.affectedPeriods?.length === 1 ? " has" : "s have"} been reopened for review.` : "Employee archived. Schedule history is preserved.");
     await load();
   }
   async function restore(id: string) {
@@ -159,7 +164,7 @@ export default function TeamPage() {
               type="checkbox"
               className="accent-orange-500"
             />
-            Bilingual coverage
+            {primaryLanguageLabel} coverage
           </label>
           <button className="mt-4 flex w-full items-center justify-center gap-2 rounded-xl bg-slate-950 py-3 font-bold text-white">
             <Plus className="h-4 w-4" />
@@ -237,6 +242,7 @@ export default function TeamPage() {
         <EmployeeEditor
           employee={selected}
           shifts={shifts}
+          primaryLanguageLabel={primaryLanguageLabel}
           onClose={() => setSelected(null)}
           onSaved={async () => {
             setSelected(null);
@@ -251,11 +257,13 @@ export default function TeamPage() {
 function EmployeeEditor({
   employee,
   shifts,
+  primaryLanguageLabel,
   onClose,
   onSaved,
 }: {
   employee: Employee;
   shifts: Shift[];
+  primaryLanguageLabel: string;
   onClose: () => void;
   onSaved: () => void;
 }) {
@@ -344,7 +352,7 @@ function EmployeeEditor({
             type="checkbox"
             defaultChecked={employee.isBilingual}
           />
-          Bilingual employee
+          {primaryLanguageLabel} employee
         </label>
         <div className="mt-6">
           <p className="text-sm font-bold">Preferred days off</p>
@@ -370,7 +378,7 @@ function EmployeeEditor({
             <CalendarOff className="h-4 w-4 text-orange-500" />
             <div>
               <p className="text-sm font-bold">Leave and planned exceptions</p>
-              <p className="mt-1 text-xs text-slate-500">Add annual leave, comp off, and public holidays before generating the roster. Emergency leave updates an existing schedule immediately.</p>
+              <p className="mt-1 text-xs text-slate-500">Add planned leave before generating the roster. Once a roster exists, reopen and regenerate it before changing planned leave. Emergency leave updates an existing schedule immediately.</p>
             </div>
           </div>
           <div className="mt-3 space-y-2">

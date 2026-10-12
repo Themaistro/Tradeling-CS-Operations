@@ -17,7 +17,7 @@ export async function PUT(request: Request) {
     if (parsed.data.botToken) data.slackBotTokenEncrypted = encryptSecret(parsed.data.botToken);
     if (parsed.data.appToken) data.slackAppTokenEncrypted = encryptSecret(parsed.data.appToken);
     const settings = await prisma.appSettings.upsert({ where: { id: "global" }, create: { id: "global", ...data }, update: data });
-    return NextResponse.json({ ok: true, botTokenConfigured: Boolean(process.env.SLACK_BOT_TOKEN || settings.slackBotTokenEncrypted), appTokenConfigured: Boolean(process.env.SLACK_APP_TOKEN || settings.slackAppTokenEncrypted), restartRequired: Boolean(parsed.data.appToken) });
+    return NextResponse.json({ ok: true, botTokenConfigured: Boolean(process.env.SLACK_BOT_TOKEN || settings.slackBotTokenEncrypted), appTokenConfigured: Boolean(process.env.SLACK_APP_TOKEN || settings.slackAppTokenEncrypted), restartRequired: Boolean(parsed.data.appToken || parsed.data.botToken) });
   } catch (error) {
     return NextResponse.json({ error: error instanceof Error ? error.message : "The credentials could not be encrypted." }, { status: 500 });
   }

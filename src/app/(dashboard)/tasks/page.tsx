@@ -4,13 +4,14 @@ import { FormEvent, useEffect, useState } from "react";
 import { CalendarDays, ChevronLeft, ChevronRight, Clock3, LoaderCircle, Plus, Sparkles, Trash2, UserRound } from "lucide-react";
 import { PageHeading } from "@/components/ui/page-heading";
 import { TaskIcon } from "@/components/ui/task-icon";
+import { requestAppConfirmation } from "@/components/ui/app-feedback";
 type Daily = {
   assignments: {
     id: string;
     employee: { id: string; name: string };
     shift: { name: string };
+    availableCategories: { id: string; name: string; icon: string; defaultPriority: number; accountName: string | null }[];
   }[];
-  categories: { id: string; name: string; icon: string; defaultPriority: number }[];
   tasks: {
     id: string;
     employeeId: string;
@@ -24,18 +25,18 @@ type Daily = {
   breaks: { employeeId: string; type: "MAIN" | "SHORT"; startTime: string; endTime: string }[];
 };
 type WeekSummary = { date: string; agents: number; tasks: number; breaks: number }[];
-const today = () =>
+const today = (timezone = "UTC") =>
   new Intl.DateTimeFormat("en-CA", {
-    timeZone: "Asia/Dubai",
+    timeZone: timezone,
     year: "numeric",
     month: "2-digit",
     day: "2-digit",
   }).format(new Date());
 const asUtcDate = (value: string) => new Date(`${value}T12:00:00.000Z`);
 const dateKey = (value: Date) => value.toISOString().slice(0, 10);
-const weekStartFor = (value: string) => {
+const weekStartFor = (value: string, weekStartsOn: number) => {
   const result = asUtcDate(value);
-  result.setUTCDate(result.getUTCDate() - result.getUTCDay());
+  result.setUTCDate(result.getUTCDate() - ((result.getUTCDay() - weekStartsOn + 7) % 7));
   return dateKey(result);
 };
 export default function TasksPage() {
@@ -44,8 +45,19 @@ export default function TasksPage() {
   const [loading, setLoading] = useState(true);
   const [message, setMessage] = useState("");
   const [week, setWeek] = useState<WeekSummary>([]);
+  const [weekStartsOn, setWeekStartsOn] = useState(0);
+  useEffect(() => {
+    let active = true;
+    fetch("/api/settings")
+      .then((response) => response.json())
+      .then((value) => {
+        if (active && value.settings?.timezone) { setDate(today(value.settings.timezone)); setWeekStartsOn(value.settings.weekStartsOn ?? 0); }
+      })
+      .catch(() => undefined);
+    return () => { active = false; };
+  }, []);
   async function loadWeek(selectedDate = date) {
-    const response = await fetch(`/api/daily?weekStart=${weekStartFor(selectedDate)}`);
+    const response = await fetch(`/api/daily?weekStart=${weekStartFor(selectedDate, weekStartsOn)}`);
     setWeek(await response.json());
   }
   async function load() {
@@ -66,11 +78,11 @@ export default function TasksPage() {
       .finally(() => {
         if (active) setLoading(false);
       });
-    void fetch(`/api/daily?weekStart=${weekStartFor(date)}`).then((response)=>response.json()).then((value)=>{if(active)setWeek(value);});
+    void fetch(`/api/daily?weekStart=${weekStartFor(date, weekStartsOn)}`).then((response)=>response.json()).then((value)=>{if(active)setWeek(value);});
     return () => {
       active = false;
     };
-  }, [date]);
+  }, [date, weekStartsOn]);
   function moveWeek(offset: number) {
     const next = asUtcDate(date);
     next.setUTCDate(next.getUTCDate() + offset * 7);
@@ -123,7 +135,7 @@ export default function TasksPage() {
     const body = await response.json();
     if (response.status === 409 && body.code === "PLAN_EXISTS") {
       setLoading(false);
-      if (confirm(`This date already has ${body.existingTasks} task assignment(s) and ${body.existingBreaks} break(s). Rebuild the complete daily plan?`)) await buildPlan(true);
+      if (await requestAppConfirmation({ title: "Rebuild daily plan?", message: `This date already has ${body.existingTasks} task assignment(s) and ${body.existingBreaks} break(s). Rebuilding replaces the current daily plan.`, confirmLabel: "Rebuild plan" })) await buildPlan(true);
       return;
     }
     setMessage(response.ok ? `Daily plan created: ${body.tasksCreated} task assignment(s) and ${body.breaksCreated} break(s).${body.warnings?.length ? ` ${body.warnings.join(" ")}` : ""}` : body.error);
@@ -198,7 +210,6 @@ export default function TasksPage() {
               (t) => t.employeeId === a.employee.id,
             );
             const employeeBreaks = data.breaks.filter((b) => b.employeeId === a.employee.id);
-            const mainBreak = employeeBreaks.find((b) => b.type === "MAIN");
             return (
               <article
                 key={a.id}
@@ -220,7 +231,7 @@ export default function TasksPage() {
                   {!tasks.length && <div className="rounded-xl border border-dashed border-slate-200 p-5 text-center text-sm text-slate-400">No tasks assigned yet.</div>}
                   {tasks.map((t) => (
                     <div key={t.id} className="relative flex gap-3 rounded-xl border border-slate-100 bg-white p-3.5 pr-10 shadow-sm">
-                      <TaskIcon name={t.category.name} />
+                      <TaskIcon name={t.category.name} icon={t.category.icon} />
                       <div className="min-w-0"><div className="flex flex-wrap items-center gap-2"><b className="text-sm text-slate-900">{t.category.name}</b><span className={`rounded-full px-2 py-0.5 text-[10px] font-extrabold ${t.priority===1?"bg-orange-100 text-orange-700":"bg-slate-100 text-slate-600"}`}>P{t.priority}</span></div>
                       {t.startTime && t.endTime && <span className="mt-1 block text-xs font-semibold text-slate-400">{t.startTime}–{t.endTime}</span>}
                       {t.note && (
@@ -235,33 +246,33 @@ export default function TasksPage() {
                   <summary className="cursor-pointer select-none text-sm font-bold text-slate-600">Manage tasks and breaks</summary>
                 <form
                   onSubmit={(e) => addTask(e, a.employee.id)}
-                  className="mt-4 grid gap-2 sm:grid-cols-[1fr_90px_1.4fr_auto]"
+                  className="mt-4 flex flex-wrap gap-2"
                 >
                   <select
                     required
                     name="categoryId"
-                    className="rounded-xl border border-slate-200 px-3 py-2 text-sm"
+                    className="min-w-40 flex-1 rounded-xl border border-slate-200 px-3 py-2 text-sm"
                   >
                     <option value="">Choose task</option>
-                    {data.categories.map((c) => (
+                    {a.availableCategories.map((c) => (
                       <option key={c.id} value={c.id}>
-                        {c.name}
+                        {c.name}{c.accountName ? ` · ${c.accountName}` : ""}
                       </option>
                     ))}
                   </select>
-                  <select name="priority" defaultValue="1" className="rounded-xl border border-slate-200 px-3 py-2 text-sm"><option value="1">P1</option><option value="2">P2</option></select>
+                  <select name="priority" defaultValue="1" className="w-20 rounded-xl border border-slate-200 px-3 py-2 text-sm"><option value="1">P1</option><option value="2">P2</option></select>
                   <input
                     name="note"
                     placeholder="Optional note"
-                    className="rounded-xl border border-slate-200 px-3 py-2 text-sm"
+                    className="min-w-40 flex-[1.4] rounded-xl border border-slate-200 px-3 py-2 text-sm"
                   />
-                  <button className="rounded-xl bg-slate-950 px-3 text-white">
+                  <button aria-label={`Add task for ${a.employee.name}`} title="Add task" className="grid h-10 w-10 place-items-center rounded-xl bg-slate-950 text-white hover:bg-slate-800">
                     <Plus className="h-4 w-4" />
                   </button>
                 </form>
                 <form
                   onSubmit={(e) => saveBreak(e, a.employee.id)}
-                  className="mt-3 flex items-end gap-2 rounded-xl border border-slate-200 p-3"
+                  className="mt-3 flex flex-wrap items-end gap-2 rounded-xl border border-slate-200 p-3"
                 >
                   <label className="text-xs font-bold">Break type<select name="type" className="mt-1 block rounded-lg border border-slate-200 px-2 py-2"><option value="MAIN">Main · 40 min</option><option value="SHORT">Short · 20 min</option></select></label>
                   <label className="text-xs font-bold">
@@ -270,7 +281,7 @@ export default function TasksPage() {
                       required
                       name="start"
                       type="time"
-                      defaultValue={mainBreak?.startTime}
+                      placeholder="e.g. 13:00"
                       className="mt-1 block rounded-lg border border-slate-200 px-2 py-2"
                     />
                   </label>
@@ -280,7 +291,7 @@ export default function TasksPage() {
                       required
                       name="end"
                       type="time"
-                      defaultValue={mainBreak?.endTime}
+                      placeholder="e.g. 13:40"
                       className="mt-1 block rounded-lg border border-slate-200 px-2 py-2"
                     />
                   </label>

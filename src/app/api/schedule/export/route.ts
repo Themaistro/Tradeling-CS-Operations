@@ -36,7 +36,7 @@ export async function GET(request: Request) {
 
   const start = new Date(Date.UTC(year, month - 1, 1));
   const end = new Date(Date.UTC(year, month, 1));
-  const [period, breaks, tasks] = await Promise.all([
+  const [period, breaks, tasks, settings] = await Promise.all([
     prisma.schedulePeriod.findUnique({
       where: { year_month: { year, month } },
       include: { assignments: { include: { employee: true, shift: true }, orderBy: [{ employee: { name: "asc" } }, { date: "asc" }] } },
@@ -45,11 +45,14 @@ export async function GET(request: Request) {
     includeTasks
       ? prisma.taskAssignment.findMany({ where: { date: { gte: start, lt: end } }, include: { employee: true, category: true }, orderBy: [{ date: "asc" }, { employee: { name: "asc" } }, { category: { order: "asc" } }] })
       : Promise.resolve([]),
+    prisma.appSettings.upsert({ where: { id: "global" }, create: { id: "global" }, update: {} }),
   ]);
   if (!period) return NextResponse.json({ error: "Generate the schedule before downloading it." }, { status: 404 });
+  const latestStartingShiftId = [...new Map(period.assignments.map((assignment) => assignment.shift).filter((shift): shift is NonNullable<typeof shift> => Boolean(shift)).map((shift) => [shift.id, shift])).values()]
+    .sort((left, right) => right.startTime.localeCompare(left.startTime))[0]?.id;
 
   const workbook = new ExcelJS.Workbook();
-  workbook.creator = "Tradeling CS Operations";
+  workbook.creator = `${settings.organizationName} ${settings.workspaceName}`;
   workbook.created = new Date();
   const roster = workbook.addWorksheet("Monthly roster", { views: [{ state: "frozen", xSplit: 1, ySplit: 3 }] });
   roster.properties.defaultRowHeight = 22;
@@ -59,7 +62,7 @@ export async function GET(request: Request) {
 
   roster.mergeCells(1, 1, 1, dates.length + 1);
   const title = roster.getCell(1, 1);
-  title.value = `Customer Service Schedule — ${monthName}`;
+  title.value = `${settings.workspaceName} — ${monthName}`;
   title.font = { bold: true, size: 16, color: { argb: "FFFFFFFF" } };
   title.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FF172033" } };
   title.alignment = { horizontal: "left", vertical: "middle" };
@@ -101,8 +104,8 @@ export async function GET(request: Request) {
         const shift = assignment.shift ? `${displayTime(assignment.shift.startTime)}–${displayTime(assignment.shift.endTime)}` : "Working";
         const breakText = employeeBreaks.map((item) => `${item.type === "MAIN" ? "Break" : "Short break"} ${displayTime(item.startTime)}–${displayTime(item.endTime)}`).join("\n");
         cell.value = `${location}${shift}${breakText ? `\n${breakText}` : ""}`;
-        const late = assignment.shift ? assignment.shift.startTime >= "12:00" : false;
-        cell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: late ? "FFCFE2F3" : assignment.workLocation === "WFH" ? "FFD9EAD3" : "FFF4CCCC" } };
+        const isLatestShift = assignment.shift?.id === latestStartingShiftId;
+        cell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: isLatestShift ? "FFCFE2F3" : assignment.workLocation === "WFH" ? "FFD9EAD3" : "FFF4CCCC" } };
       }
       cell.alignment = { horizontal: "center", vertical: "middle", wrapText: true };
       cell.border = { top: { style: "thin" }, left: { style: "thin" }, bottom: { style: "thin" }, right: { style: "thin" } };
@@ -113,7 +116,7 @@ export async function GET(request: Request) {
   for (let index = 2; index <= dates.length + 1; index += 1) roster.getColumn(index).width = 19;
   roster.autoFilter = { from: { row: 3, column: 1 }, to: { row: 3, column: dates.length + 1 } };
   roster.pageSetup = { orientation: "landscape", fitToPage: true, fitToWidth: 1, fitToHeight: 0, paperSize: 9 };
-  roster.headerFooter.oddFooter = "&LTradeling CS Operations&CPage &P of &N&RGenerated &D";
+  roster.headerFooter.oddFooter = `&L${settings.organizationName} ${settings.workspaceName}&CPage &P of &N&RGenerated &D`;
 
   if (includeTasks) {
     const taskSheet = workbook.addWorksheet("Daily tasks", { views: [{ state: "frozen", ySplit: 1 }] });

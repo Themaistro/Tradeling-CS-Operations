@@ -20,7 +20,7 @@ export async function POST(request: Request) {
   const historyStart = new Date(date); historyStart.setUTCDate(historyStart.getUTCDate() - 42);
   const [assignments, categories, accounts, focusHistory, rotationBaselines, existingTasks, existingBreaks, settings] = await Promise.all([
     prisma.shiftAssignment.findMany({
-      where: { date, status: "WORKING", schedulePeriod: { status: { in: ["APPROVED", "PUBLISHED"] } } },
+      where: { date, status: "WORKING", employee: { status: "ACTIVE" }, schedulePeriod: { status: { in: ["APPROVED", "PUBLISHED"] } } },
       include: { employee: true, shift: { include: { staffingRules: { where: { dayOfWeek: weekday } } } } },
       orderBy: [{ shift: { order: "asc" } }, { employee: { name: "asc" } }],
     }),
@@ -41,10 +41,13 @@ export async function POST(request: Request) {
   const normalizeQueue = (value: string) => value.toLowerCase().replace(/[^a-z0-9]/g, "");
   const weekStart = new Date(date); weekStart.setUTCDate(weekStart.getUTCDate() - ((weekday - settings.weekStartsOn + 7) % 7));
   const byShift = Map.groupBy(assignments, (assignment) => assignment.shiftId ?? "unassigned");
-  for (const shiftAssignments of byShift.values()) {
+  const shiftGroups = [...byShift.values()].filter((group) => Boolean(group[0]?.shift)).sort((left, right) => left[0]!.shift!.startTime.localeCompare(right[0]!.shift!.startTime));
+  const categoryById = new Map(categories.map((category) => [category.id, category]));
+  const accountsCoveredForWholeShift = (shift: NonNullable<(typeof assignments)[number]["shift"]>) => accounts.filter((account) => account.coverageRequirements.some((requirement) => requirement.dayOfWeek === weekday && shift.startTime <= requirement.startTime && shift.endTime >= requirement.endTime));
+  for (const shiftAssignments of shiftGroups) {
     const shift = shiftAssignments[0]?.shift;
     if (!shift) continue;
-    const relevantAccounts = accounts.filter((account) => account.coverageRequirements.some((requirement) => requirement.dayOfWeek === weekday && shift.startTime <= requirement.startTime && shift.endTime >= requirement.endTime));
+    const relevantAccounts = accountsCoveredForWholeShift(shift);
     const relevantAccountIds = new Set(relevantAccounts.map((account) => account.id));
     const relevantCategories = categories.filter((category) => category.accountId && relevantAccountIds.has(category.accountId));
     const grouped = Map.groupBy(relevantCategories, (category) => normalizeQueue(category.name));
@@ -91,6 +94,60 @@ export async function POST(request: Request) {
       if (!candidates.length) { warnings.push(`${queue.category.name} has no eligible scheduled agent on ${shift.name}.`); continue; }
       const assignment = candidates.sort((left, right) => taskRows.filter((item) => item.employeeId === left.employeeId).length - taskRows.filter((item) => item.employeeId === right.employeeId).length)[0];
       taskRows.push({ date, employeeId: assignment.employeeId, categoryId: queue.category.id, priority: queue.category.defaultPriority, startTime: queue.startTime, endTime: queue.endTime, note: queue.accountNames.join(" + ") });
+    }
+  }
+
+  // An afternoon/night shift shares daytime coverage before becoming
+  // the sole late coverage. During that overlap, it shares Calls and Chats.
+  // If the daytime team is short a rotating focus queue, the overlap agent
+  // takes that missing responsibility until the day shift ends.
+  const dayGroup = shiftGroups[0];
+  if (dayGroup?.[0]?.shift) for (const overlapGroup of shiftGroups.slice(1)) {
+    const dayShift = dayGroup[0].shift; const overlapShift = overlapGroup[0]?.shift;
+    if (!overlapShift) continue;
+    const overlapStart = Math.max(toMinutes(dayShift.startTime), toMinutes(overlapShift.startTime));
+    const overlapEnd = Math.min(toMinutes(dayShift.endTime), toMinutes(overlapShift.endTime));
+    if (overlapEnd <= overlapStart) continue;
+    const overlapAccounts = accounts.filter((account) => account.coverageRequirements.some((requirement) => requirement.dayOfWeek === weekday && toMinutes(requirement.startTime) < overlapEnd && toMinutes(requirement.endTime) > overlapStart));
+    const lateAccountIds = new Set(accountsCoveredForWholeShift(overlapShift).map((account) => account.id));
+    const overlapCategories = categories.filter((category) => category.accountId && overlapAccounts.some((account) => account.id === category.accountId));
+    const overlapQueues = [...Map.groupBy(overlapCategories, (category) => normalizeQueue(category.name)).entries()];
+    const dayEmployeeIds = new Set(dayGroup.map((assignment) => assignment.employeeId));
+    const coveredDayFocus = new Set(taskRows.filter((row) => dayEmployeeIds.has(row.employeeId) && categoryById.get(row.categoryId)?.mode === "FOCUS").map((row) => normalizeQueue(categoryById.get(row.categoryId)?.name ?? "")));
+    const supportCategory = (items: typeof categories) => items.find((category) => !lateAccountIds.has(category.accountId ?? "") && !taskRows.some((row) => row.employeeId === overlapGroup[0]!.employeeId && row.categoryId === category.id));
+    const focusQueues = overlapQueues.filter(([, items]) => items[0].mode === "FOCUS");
+    const missingFocus = focusQueues.filter(([, items]) => !coveredDayFocus.has(normalizeQueue(items[0].name)));
+    const assignedOverlapFocus = new Set<string>();
+    const assignOverlapFocus = (queueName: string, items: typeof categories, replacement?: (typeof taskRows)[number]) => {
+      const category = supportCategory(items); const candidate = [...overlapGroup].sort((left, right) => taskRows.filter((row) => row.employeeId === left.employeeId).length - taskRows.filter((row) => row.employeeId === right.employeeId).length)[0];
+      if (!category || !candidate) { warnings.push(`${items[0].name} has no overlap-shift cover for the daytime shortage.`); return false; }
+      const values = { employeeId: candidate.employeeId, categoryId: category.id, priority: 1, startTime: toTime(overlapStart), endTime: toTime(overlapEnd), note: `${overlapAccounts.filter((account) => account.id === category.accountId).map((account) => account.name).join(" + ")} · primary focus during shared coverage` };
+      if (replacement) Object.assign(replacement, values); else taskRows.push({ date, ...values });
+      assignedOverlapFocus.add(queueName);
+      return true;
+    };
+    // If there are fewer Day agents than daytime focus queues, move a
+    // non-live focus responsibility to the overlapping shift rather than
+    // giving two primary responsibilities to a Day agent.
+    let remainingCover = Math.max(0, focusQueues.length - dayGroup.length);
+    const transferableFocus = focusQueues
+      .map(([queueName, items]) => ({ queueName, items, row: taskRows.find((row) => dayEmployeeIds.has(row.employeeId) && normalizeQueue(categoryById.get(row.categoryId)?.name ?? "") === queueName) }))
+      .filter((item): item is { queueName: string; items: typeof categories; row: (typeof taskRows)[number] } => Boolean(item.row))
+      .sort((left, right) => Number(left.items[0].isLive) - Number(right.items[0].isLive) || right.items[0].rotationOrder - left.items[0].rotationOrder);
+    for (const item of transferableFocus) {
+      if (!remainingCover) break;
+      const ownerFocusCount = taskRows.filter((row) => row.employeeId === item.row.employeeId && categoryById.get(row.categoryId)?.mode === "FOCUS").length;
+      if (ownerFocusCount < 2) continue;
+      if (assignOverlapFocus(item.queueName, item.items, item.row)) remainingCover -= 1;
+    }
+    for (const [queueName, items] of missingFocus) {
+      if (!assignedOverlapFocus.has(queueName)) assignOverlapFocus(queueName, items);
+    }
+    if (assignedOverlapFocus.size) for (const [queueName, items] of overlapQueues.filter(([, items]) => items[0].isLive)) {
+      if (assignedOverlapFocus.has(queueName)) continue;
+      const category = supportCategory(items);
+      if (!category) continue;
+      for (const assignment of overlapGroup) taskRows.push({ date, employeeId: assignment.employeeId, categoryId: category.id, priority: 2, startTime: toTime(overlapStart), endTime: toTime(overlapEnd), note: `${overlapAccounts.map((account) => account.name).join(" + ")} · shared coverage` });
     }
   }
 

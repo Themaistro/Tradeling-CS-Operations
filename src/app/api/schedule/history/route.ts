@@ -16,8 +16,9 @@ const input = z.object({
   rotations: z.array(z.object({ employeeId: z.string(), taskCategoryId: z.string().nullable() })),
 });
 
-function windowFor(year: number, month: number, windowDays: number) {
-  const end = new Date(Date.UTC(year, month - 1, 1));
+function windowFor(year: number, month: number, windowDays: number, cutoverDate?: Date | null) {
+  const monthStart = new Date(Date.UTC(year, month - 1, 1));
+  const end = cutoverDate && cutoverDate.getUTCFullYear() === year && cutoverDate.getUTCMonth() + 1 === month ? cutoverDate : monthStart;
   const start = new Date(end);
   start.setUTCDate(start.getUTCDate() - windowDays);
   return { start, end, dates: Array.from({ length: windowDays }, (_, index) => new Date(start.getTime() + index * 86400000).toISOString().slice(0, 10)) };
@@ -29,7 +30,7 @@ export async function GET(request: Request) {
   const month = Number(url.searchParams.get("month"));
   if (!Number.isInteger(year) || !Number.isInteger(month) || month < 1 || month > 12) return NextResponse.json({ error: "Choose a valid schedule month." }, { status: 400 });
   const settings = await prisma.appSettings.upsert({ where: { id: "global" }, create: { id: "global" }, update: {} });
-  const { start, end, dates } = windowFor(year, month, settings.historyWindowDays);
+  const { start, end, dates } = windowFor(year, month, settings.historyWindowDays, settings.projectStartDate);
   const [employees, shifts, categories, saved, scheduled, rotations] = await Promise.all([
     prisma.employee.findMany({ where: { status: "ACTIVE" }, orderBy: { name: "asc" } }),
     prisma.shift.findMany({ where: { active: true }, orderBy: { order: "asc" } }),
@@ -51,7 +52,7 @@ export async function PUT(request: Request) {
   const parsed = input.safeParse(await request.json());
   if (!parsed.success) return NextResponse.json({ error: "Review the previous-history entries." }, { status: 400 });
   const settings = await prisma.appSettings.upsert({ where: { id: "global" }, create: { id: "global" }, update: {} });
-  const { start, end, dates } = windowFor(parsed.data.year, parsed.data.month, settings.historyWindowDays);
+  const { start, end, dates } = windowFor(parsed.data.year, parsed.data.month, settings.historyWindowDays, settings.projectStartDate);
   const allowedDates = new Set(dates);
   if (parsed.data.entries.some((item) => !allowedDates.has(item.date) || (item.status === "WORKING" && !item.shiftId))) return NextResponse.json({ error: "Every working history day needs a valid shift." }, { status: 400 });
   const activeEmployees = new Set((await prisma.employee.findMany({ where: { status: "ACTIVE" }, select: { id: true } })).map((item) => item.id));

@@ -16,6 +16,8 @@ export async function POST(request: Request) {
   const parsed = schema.safeParse(await request.json());
   if (!parsed.success) return NextResponse.json({ error: parsed.error.issues[0]?.message ?? "Please check the shift details." }, { status: 400 });
   if(parsed.data.minimumBilingual>parsed.data.minimumStaff)return NextResponse.json({error:"Bilingual coverage cannot be higher than total staffing."},{status:400});
+  const matchingShift = await prisma.shift.findFirst({ where: { active: true, startTime: parsed.data.startTime, endTime: parsed.data.endTime } });
+  if (matchingShift) return NextResponse.json({ error: `${matchingShift.name} already covers ${parsed.data.startTime}–${parsed.data.endTime}. Edit that shift instead of creating a duplicate.` }, { status: 409 });
   const { minimumStaff, minimumBilingual, ...shiftData } = parsed.data;
   const shift = await prisma.shift.create({ data: { ...shiftData, order: await prisma.shift.count(), staffingRules: { create: Array.from({ length: 7 }, (_, dayOfWeek) => ({ dayOfWeek, minimumStaff, minimumBilingual })) } }, include: { staffingRules: true } });
   return NextResponse.json(shift, { status: 201 });

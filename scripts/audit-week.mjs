@@ -1,3 +1,4 @@
+import "dotenv/config";
 import { PrismaClient } from "@prisma/client";
 
 const prisma = new PrismaClient();
@@ -55,8 +56,11 @@ for (const date of dates) {
     if (!agentTasks.length) fail(`${date}: ${assignment.employee.name} is working but has no tasks.`);
     if (!agentTasks.some((item) => /calls?/i.test(item.category.name))) fail(`${date}: ${assignment.employee.name} is working but is not assigned to Calls.`);
     const focusTasks = agentTasks.filter((item) => item.category.mode === "FOCUS");
-    const sameShiftCount = dayWorking.filter((item) => item.shiftId === assignment.shiftId).length;
-    if (focusTasks.length > 1 && sameShiftCount > 1) fail(`${date}: ${assignment.employee.name} has ${focusTasks.length} conflicting focus tasks.`);
+    const sameShift = dayWorking.filter((item) => item.shiftId === assignment.shiftId);
+    const focusQueuesInShift = tasks.filter((item) => key(item.date) === date && item.category.mode === "FOCUS" && sameShift.some((scheduled) => scheduled.employeeId === item.employeeId));
+    const distinctFocusQueues = new Set(focusQueuesInShift.map((item) => item.categoryId)).size;
+    if (focusTasks.length > 1 && distinctFocusQueues <= sameShift.length) fail(`${date}: ${assignment.employee.name} has ${focusTasks.length} focus tasks even though ${sameShift.length} agent(s) are available in the same shift.`);
+    if (focusTasks.length > 1 && distinctFocusQueues > sameShift.length && sameShift.length > 1) warn(`${date}: ${assignment.employee.name} carries ${focusTasks.length} focus tasks because ${distinctFocusQueues} focus queues exceed the ${sameShift.length} available agent(s) in that shift.`);
     if (agentBreaks.filter((item) => item.type === "MAIN").length !== 1) fail(`${date}: ${assignment.employee.name} does not have exactly one main break.`);
     if (agentBreaks.filter((item) => item.type === "SHORT").length !== 1) fail(`${date}: ${assignment.employee.name} does not have exactly one short break.`);
     for (const item of agentBreaks) {

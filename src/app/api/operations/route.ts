@@ -5,7 +5,7 @@ import { prisma } from "@/lib/db/prisma";
 const time = z.string().regex(/^\d{2}:\d{2}$/);
 const day = z.number().int().min(0).max(6);
 const actions = z.discriminatedUnion("action", [
-  z.object({ action: z.literal("createAccount"), name: z.string().trim().min(2).max(80), code: z.string().trim().min(2).max(20).regex(/^[A-Za-z0-9_-]+$/), color: z.string().default("blue") }),
+  z.object({ action: z.literal("createAccount"), name: z.string().trim().min(2).max(80), code: z.string().trim().min(2).max(20).regex(/^[A-Za-z0-9_-]+$/), color: z.string().default("blue"), copyFromId: z.string().optional() }),
   z.object({ action: z.literal("updateAccount"), id: z.string(), name: z.string().trim().min(2).max(80), code: z.string().trim().min(2).max(20).regex(/^[A-Za-z0-9_-]+$/), active: z.boolean() }),
   z.object({ action: z.literal("addWindow"), accountId: z.string(), dayOfWeek: day, startTime: time, endTime: time }),
   z.object({ action: z.literal("removeWindow"), id: z.string() }),
@@ -15,12 +15,13 @@ const actions = z.discriminatedUnion("action", [
 ]);
 
 export async function GET() {
-  const [accounts, employees, shifts] = await Promise.all([
+  const [accounts, employees, shifts, settings] = await Promise.all([
     prisma.account.findMany({ include: { operatingWindows: { orderBy: [{ dayOfWeek: "asc" }, { startTime: "asc" }] }, coverageRequirements: { orderBy: [{ dayOfWeek: "asc" }, { startTime: "asc" }] }, taskCategories: { where: { active: true }, orderBy: { order: "asc" } }, employeeCapabilities: true }, orderBy: { name: "asc" } }),
     prisma.employee.findMany({ where: { status: "ACTIVE" }, select: { id: true, name: true, accountCapabilities: true }, orderBy: { name: "asc" } }),
     prisma.shift.findMany({ where: { active: true }, include: { staffingRules: true }, orderBy: { order: "asc" } }),
+    prisma.appSettings.upsert({ where: { id: "global" }, create: { id: "global" }, update: {} }),
   ]);
-  return NextResponse.json({ accounts, employees, shifts });
+  return NextResponse.json({ accounts, employees, shifts, primaryLanguageLabel: settings.primaryLanguageLabel });
 }
 
 export async function POST(request: Request) {
@@ -28,7 +29,13 @@ export async function POST(request: Request) {
   if (!parsed.success) return NextResponse.json({ error: parsed.error.issues[0]?.message ?? "Check the operation settings." }, { status: 400 });
   const data = parsed.data;
   try {
-    if (data.action === "createAccount") return NextResponse.json(await prisma.account.create({ data: { name: data.name, code: data.code.toUpperCase(), color: data.color } }), { status: 201 });
+    if (data.action === "createAccount") {
+      if (!data.copyFromId) return NextResponse.json(await prisma.account.create({ data: { name: data.name, code: data.code.toUpperCase(), color: data.color } }), { status: 201 });
+      const source = await prisma.account.findUnique({ where: { id: data.copyFromId }, include: { operatingWindows: true, coverageRequirements: true, taskCategories: { where: { active: true } }, employeeCapabilities: true } });
+      if (!source) return NextResponse.json({ error: "The account to copy was not found." }, { status: 404 });
+      const account = await prisma.$transaction(async (tx) => tx.account.create({ data: { name: data.name, code: data.code.toUpperCase(), color: source.color, operatingWindows: { create: source.operatingWindows.map(({ dayOfWeek, startTime, endTime }) => ({ dayOfWeek, startTime, endTime })) }, coverageRequirements: { create: source.coverageRequirements.map(({ dayOfWeek, startTime, endTime, minimumStaff, minimumBilingual }) => ({ dayOfWeek, startTime, endTime, minimumStaff, minimumBilingual })) }, taskCategories: { create: source.taskCategories.map(({ name, icon, color, order, groupName, isLive, mode, defaultPriority, rotationOrder }) => ({ name, icon, color, order, groupName, isLive, mode, defaultPriority, rotationOrder })) }, employeeCapabilities: { create: source.employeeCapabilities.map(({ employeeId }) => ({ employeeId })) } } }));
+      return NextResponse.json(account, { status: 201 });
+    }
     if (data.action === "updateAccount") return NextResponse.json(await prisma.account.update({ where: { id: data.id }, data: { name: data.name, code: data.code.toUpperCase(), active: data.active } }));
     if (data.action === "addWindow") {
       if (data.endTime <= data.startTime) return NextResponse.json({ error: "Operating end time must be after its start time." }, { status: 400 });
