@@ -4,7 +4,6 @@ const { parse } = require("url");
 const next = require("next");
 const cron = require("node-cron");
 const { PrismaClient } = require("@prisma/client");
-const { WebClient } = require("@slack/web-api");
 const { SocketModeClient } = require("@slack/socket-mode");
 const { createDecipheriv, createHash } = require("crypto");
 require("dotenv").config();
@@ -144,7 +143,6 @@ app.prepare().then(async () => {
     const socket = new SocketModeClient({
       appToken,
     });
-    const slack = new WebClient(botToken);
     socket.on("error", (error) => {
       global.__csSlackSocketStatus = { configured: true, connected: false, error: error?.message || "Socket Mode connection failed.", updatedAt: new Date().toISOString() };
       console.error("Slack Socket Mode connection failed", error);
@@ -182,11 +180,9 @@ app.prepare().then(async () => {
               slackMessageTs: body.message.ts,
             },
           });
-        await slack.chat.postEphemeral({
-          channel: body.channel.id,
-          user: body.user.id,
-          text: "✅ Your assignments have been acknowledged.",
-        });
+        // The acknowledgement is deliberately recorded without posting a second
+        // Slack message. The main daily post must remain the only channel post;
+        // managers can see each recorded acknowledgement in the Overview.
       } catch (error) {
         console.error("Slack acknowledgement failed", error);
       }
