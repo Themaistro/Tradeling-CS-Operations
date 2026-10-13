@@ -75,7 +75,7 @@ app.prepare().then(async () => {
       if (
         currentMinute === null ||
         scheduledMinute === null ||
-        currentMinute < scheduledMinute
+        currentMinute !== scheduledMinute
       )
         return;
       const activeOperatingWindow = await prisma.accountOperatingWindow.findFirst({
