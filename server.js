@@ -175,10 +175,9 @@ app.prepare().then(async () => {
               scheduleDate: date,
               slackMessageTs: body.message.ts,
             },
-            update: {
-              acknowledgedAt: new Date(),
-              slackMessageTs: body.message.ts,
-            },
+            // An acknowledgement is a first-confirmation record. Repeat button
+            // clicks must not replace the original acknowledgement time.
+            update: {},
           });
         // The acknowledgement is deliberately recorded without posting a second
         // Slack message. The main daily post must remain the only channel post;
