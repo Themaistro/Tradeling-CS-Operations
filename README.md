@@ -90,3 +90,4 @@ The included container can run on any provider that supports Docker and persiste
 5. Configure automated database backups.
 
 See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the application structure.
+For a complete internal-server handover, see [docs/DEPLOYMENT-HANDOVER.md](docs/DEPLOYMENT-HANDOVER.md).
