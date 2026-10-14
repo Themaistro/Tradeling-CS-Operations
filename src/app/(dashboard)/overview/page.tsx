@@ -49,13 +49,13 @@ export default async function OverviewPage({ searchParams }: { searchParams: Pro
   }).format(new Date());
   const dateKey = params.date && /^\d{4}-\d{2}-\d{2}$/.test(params.date) ? params.date : todayKey;
   const date = new Date(`${dateKey}T00:00:00.000Z`);
-  const weekday = new Date(`${dateKey}T12:00:00.000Z`).getDay();
+  const weekday = new Date(`${dateKey}T12:00:00.000Z`).getUTCDay();
   const dateLabel = new Intl.DateTimeFormat("en-AE", { timeZone: "UTC", weekday: "long", month: "long", day: "numeric", year: "numeric" }).format(new Date(`${dateKey}T12:00:00.000Z`));
   const isToday = dateKey === todayKey;
 
-  const [assignments, tasks, breaks, accounts, lastPost, activeTeam, shifts, acknowledgements] = await Promise.all([
+  const [assignments, tasks, breaks, accounts, lastPost, activeTeam, shifts, acknowledgements, plan] = await Promise.all([
     prisma.shiftAssignment.findMany({
-      where: { date, schedulePeriod: { status: { in: ["APPROVED", "PUBLISHED"] } } },
+      where: { date, schedulePeriod: dateKey < todayKey ? undefined : { status: { in: ["APPROVED", "PUBLISHED"] } }, employee: dateKey < todayKey ? undefined : { status: "ACTIVE" } },
       include: { employee: true, shift: true },
       orderBy: { employee: { name: "asc" } },
     }),
@@ -74,7 +74,8 @@ export default async function OverviewPage({ searchParams }: { searchParams: Pro
     prisma.slackPostLog.findFirst({ where: { scheduleDate: date }, orderBy: { createdAt: "desc" } }),
     prisma.employee.findMany({ where: { status: "ACTIVE" }, select: { id: true, name: true }, orderBy: { name: "asc" } }),
     prisma.shift.findMany({ where: { active: true }, select: { id: true, startTime: true } }),
-    prisma.acknowledgement.findMany({ where: { scheduleDate: date }, select: { employeeId: true, taskCategoryId: true, acknowledgedAt: true } }),
+    prisma.acknowledgement.findMany({ where: { scheduleDate: date }, select: { employeeId: true, taskCategoryId: true, acknowledgedAt: true, planRevision: true } }),
+    prisma.dailyPlan.findUnique({ where: { date } }),
   ]);
 
   const working = assignments.filter((item) => item.status === "WORKING");
@@ -88,12 +89,12 @@ export default async function OverviewPage({ searchParams }: { searchParams: Pro
 
   const coverageChecks = accounts.flatMap((account) => account.coverageRequirements.map((requirement) => {
     const capable = new Set(account.employeeCapabilities.map((item) => item.employeeId));
-    const staffed = working.filter((assignment) => assignment.shift && capable.has(assignment.employeeId) && assignment.shift.startTime <= requirement.startTime && assignment.shift.endTime >= requirement.endTime).length;
-    return { account: account.name, ...requirement, staffed };
+    const qualifying = working.filter((assignment) => assignment.shift && capable.has(assignment.employeeId) && assignment.shift.startTime <= requirement.startTime && assignment.shift.endTime >= requirement.endTime);
+    return { account: account.name, ...requirement, staffed: qualifying.length, bilingual: qualifying.filter(item=>item.employee.isBilingual).length };
   }));
-  const coverageRisks = coverageChecks.filter((item) => item.staffed < item.minimumStaff);
+  const coverageRisks = coverageChecks.filter((item) => item.staffed < item.minimumStaff || item.bilingual < item.minimumBilingual);
   const coverage = coverageChecks.length
-    ? Math.min(...coverageChecks.map((item) => item.minimumStaff ? Math.min(100, Math.round((item.staffed / item.minimumStaff) * 100)) : 100))
+    ? Math.min(...coverageChecks.flatMap(item=>[item.minimumStaff ? Math.min(100, Math.round(item.staffed / item.minimumStaff * 100)) : 100, item.minimumBilingual ? Math.min(100, Math.round(item.bilingual / item.minimumBilingual * 100)) : 100]))
     : working.length ? 100 : 0;
   const missingTasks = working.filter((assignment) => !tasks.some((task) => task.employeeId === assignment.employeeId));
   const taskCoverage = Array.from(tasks.reduce((groups, task) => {
@@ -175,7 +176,7 @@ export default async function OverviewPage({ searchParams }: { searchParams: Pro
                 const isLatestShift = assignment.shift?.id === latestStartingShiftId;
                 const shiftLabel = assignment.shift?.name ?? "Working";
                 const taskCategoryIds = [...new Set(agentTasks.map((task) => task.categoryId))];
-                const agentAcknowledgements = acknowledgements.filter((item) => item.employeeId === assignment.employeeId);
+                const agentAcknowledgements = acknowledgements.filter((item) => item.employeeId === assignment.employeeId && item.planRevision === (plan?.revision || 1));
                 const acknowledgedCategoryIds = new Set(agentAcknowledgements.map((item) => item.taskCategoryId));
                 const acknowledged = taskCategoryIds.length > 0 && taskCategoryIds.every((categoryId) => acknowledgedCategoryIds.has(categoryId));
                 const acknowledgedAt = agentAcknowledgements.length ? new Date(Math.max(...agentAcknowledgements.map((item) => item.acknowledgedAt.getTime()))) : null;
@@ -204,7 +205,7 @@ export default async function OverviewPage({ searchParams }: { searchParams: Pro
       <section className="mt-6 grid gap-6 xl:grid-cols-[2fr_1fr]">
         <article className="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
           <div className="mb-5 flex items-center justify-between"><div><h2 className="font-bold">Service coverage</h2><p className="mt-1 text-sm text-slate-500">Configured account requirements against today’s qualified people.</p></div><Activity className="text-blue-600" /></div>
-          {coverageChecks.length ? <div className="space-y-3">{coverageChecks.map((item) => { const safe = item.staffed >= item.minimumStaff; return <div key={item.id} className="rounded-2xl border border-slate-100 p-4"><div className="flex flex-wrap items-center justify-between gap-2"><div><p className="font-bold text-slate-900">{item.account}</p><p className="mt-1 text-xs text-slate-500">{timeLabel(item.startTime)} – {timeLabel(item.endTime)}</p></div><span className={`rounded-full px-3 py-1 text-xs font-bold ${safe ? "bg-emerald-50 text-emerald-700" : "bg-amber-50 text-amber-700"}`}>{item.staffed} of {item.minimumStaff} covered</span></div><div className="mt-3 h-2 overflow-hidden rounded-full bg-slate-100"><div className={safe ? "h-full rounded-full bg-emerald-500" : "h-full rounded-full bg-amber-500"} style={{ width: `${Math.min(100, item.minimumStaff ? (item.staffed / item.minimumStaff) * 100 : 100)}%` }} /></div></div>; })}</div> : <p className="rounded-2xl bg-slate-50 p-5 text-sm text-slate-500">No account coverage requirements are configured for this day.</p>}
+          {coverageChecks.length ? <div className="space-y-3">{coverageChecks.map((item) => { const safe = item.staffed >= item.minimumStaff && item.bilingual >= item.minimumBilingual; return <div key={item.id} className="rounded-2xl border border-slate-100 p-4"><div className="flex flex-wrap items-center justify-between gap-2"><div><p className="font-bold text-slate-900">{item.account}</p><p className="mt-1 text-xs text-slate-500">{timeLabel(item.startTime)} – {timeLabel(item.endTime)}</p></div><span className={`rounded-full px-3 py-1 text-xs font-bold ${safe ? "bg-emerald-50 text-emerald-700" : "bg-amber-50 text-amber-700"}`}>{item.staffed} of {item.minimumStaff} covered{item.minimumBilingual ? ` · Language ${item.bilingual}/${item.minimumBilingual}` : ""}</span></div><div className="mt-3 h-2 overflow-hidden rounded-full bg-slate-100"><div className={safe ? "h-full rounded-full bg-emerald-500" : "h-full rounded-full bg-amber-500"} style={{ width: `${Math.min(100, item.minimumStaff ? (item.staffed / item.minimumStaff) * 100 : 100)}%` }} /></div></div>; })}</div> : <p className="rounded-2xl bg-slate-50 p-5 text-sm text-slate-500">No account coverage requirements are configured for this day.</p>}
         </article>
 
         <article className="self-start rounded-3xl bg-slate-950 p-6 text-white shadow-sm">

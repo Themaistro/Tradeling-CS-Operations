@@ -1,8 +1,9 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
 import { prisma } from "@/lib/db/prisma";
+import { dateKey } from "@/lib/validation";
 
-const schema = z.object({ cutoverDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).nullable() });
+const schema = z.object({ cutoverDate: dateKey.nullable() });
 
 export async function GET() {
   const [settings, schedules] = await Promise.all([

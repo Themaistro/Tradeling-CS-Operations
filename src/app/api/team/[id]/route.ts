@@ -1,9 +1,10 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
 import { prisma } from "@/lib/db/prisma";
+import { operationToday, dateKey } from "@/lib/validation";
 
 const leaveTypes=["PTO","ANNUAL_LEAVE","EMERGENCY_LEAVE","COMP_OFF","PUBLIC_HOLIDAY","SICK","UNPAID","OTHER","UNPAID_LEAVE","OTHER_LEAVE"] as const;
-const schema=z.object({name:z.string().trim().min(2).max(80),slackId:z.string().trim().max(30).nullable(),isBilingual:z.boolean(),preferredShiftId:z.string().nullable(),daysOff:z.array(z.number().int().min(0).max(6)),timeOff:z.array(z.object({date:z.string().regex(/^\d{4}-\d{2}-\d{2}$/),type:z.enum(leaveTypes),note:z.string().max(200).nullable().optional()}))});
+const schema=z.object({name:z.string().trim().min(2).max(80),slackId:z.string().trim().max(30).nullable(),isBilingual:z.boolean(),preferredShiftId:z.string().nullable(),daysOff:z.array(z.number().int().min(0).max(6)),timeOff:z.array(z.object({date:dateKey,type:z.enum(leaveTypes),note:z.string().max(200).nullable().optional()}))});
 
 export async function PATCH(request: Request, context: { params: Promise<{ id: string }> }) {
   const { id } = await context.params;
@@ -12,6 +13,9 @@ export async function PATCH(request: Request, context: { params: Promise<{ id: s
   const { daysOff, timeOff, ...employee } = parsed.data;
   const slackId = employee.slackId || null;
   const currentOwner = slackId ? await prisma.employee.findUnique({ where: { slackId }, select: { id: true, name: true, status: true } }) : null;
+  const settings = await prisma.appSettings.findUnique({ where: { id: "global" } });
+  const today = operationToday(settings?.timezone || "UTC");
+  const affectedPeriods = new Set<string>();
   if (currentOwner && currentOwner.id !== id && currentOwner.status === "ACTIVE") {
     return NextResponse.json({ error: `This Slack ID is already assigned to ${currentOwner.name}.` }, { status: 409 });
   }
@@ -27,17 +31,17 @@ export async function PATCH(request: Request, context: { params: Promise<{ id: s
         if (!requestedByDate.has(key)) changedDates.add(key);
       }
 
-      // Planned leave must not silently make an existing roster incorrect.
-      // Emergency leave is applied immediately so today's operational plan is safe.
+      if ([...changedDates].some(date => date < today)) throw new Error("PAST_LEAVE");
+      // Save future leave first, then reopen the affected periods for review.
       const plannedImpactDates = [...changedDates].filter((date) => requestedByDate.get(date) !== "EMERGENCY_LEAVE");
       if (plannedImpactDates.length) {
         const impacted = await tx.shiftAssignment.findMany({
           where: { employeeId: id, date: { in: plannedImpactDates.map((date) => new Date(`${date}T00:00:00.000Z`)) } },
-          select: { schedulePeriod: { select: { year: true, month: true, status: true } } },
+          select: { schedulePeriodId: true, schedulePeriod: { select: { year: true, month: true, status: true } } },
         });
         if (impacted.length) {
-          const periods = [...new Set(impacted.map((item) => `${item.schedulePeriod.year}-${String(item.schedulePeriod.month).padStart(2, "0")} (${item.schedulePeriod.status.toLowerCase()})`))];
-          throw new Error(`SCHEDULE_REVIEW:${periods.join(", ")}`);
+          for (const item of impacted) affectedPeriods.add(`${item.schedulePeriod.year}-${String(item.schedulePeriod.month).padStart(2, "0")}`);
+          await tx.schedulePeriod.updateMany({ where: { id: { in: [...new Set(impacted.map(item => item.schedulePeriodId))] } }, data: { status: "DRAFT", approvedAt: null } });
         }
       }
       if (currentOwner && currentOwner.id !== id) await tx.employee.update({ where: { id: currentOwner.id }, data: { slackId: null } });
@@ -46,19 +50,23 @@ export async function PATCH(request: Request, context: { params: Promise<{ id: s
       if (daysOff.length) await tx.dayOffPreference.createMany({ data: daysOff.map((dayOfWeek) => ({ employeeId: id, rank: 1, dayOfWeek })) });
       await tx.timeOff.deleteMany({ where: { employeeId: id } });
       if (timeOff.length) await tx.timeOff.createMany({ data: timeOff.map((item) => ({ employeeId: id, date: new Date(`${item.date}T00:00:00.000Z`), type: item.type, note: item.note || null })) });
-      for (const item of timeOff.filter((item) => changedDates.has(item.date) && item.type === "EMERGENCY_LEAVE")) {
+      for (const item of timeOff.filter((item) => changedDates.has(item.date))) {
         const date = new Date(`${item.date}T00:00:00.000Z`);
         const status = item.type === "UNPAID" ? "UNPAID_LEAVE" : item.type === "OTHER" ? "OTHER_LEAVE" : item.type;
         await tx.shiftAssignment.updateMany({ where: { employeeId: id, date }, data: { status, shiftId: null, workLocation: "OFFICE", source: item.type === "EMERGENCY_LEAVE" ? "emergency-leave" : "leave" } });
         await tx.taskAssignment.deleteMany({ where: { employeeId: id, date } });
         await tx.breakSchedule.deleteMany({ where: { employeeId: id, date } });
       }
+      for (const key of changedDates) if (!requestedByDate.has(key)) {
+        const date = new Date(`${key}T00:00:00Z`);
+        await tx.shiftAssignment.updateMany({ where: { employeeId: id, date }, data: { status: "OFF", shiftId: null, source: "leave-needs-review" } });
+        await tx.taskAssignment.deleteMany({ where: { employeeId: id, date } });
+        await tx.breakSchedule.deleteMany({ where: { employeeId: id, date } });
+      }
     });
-    return NextResponse.json({ ok: true, reassignedArchivedSlackId: Boolean(currentOwner && currentOwner.id !== id) });
+    return NextResponse.json({ ok: true, affectedPeriods: [...affectedPeriods], reassignedArchivedSlackId: Boolean(currentOwner && currentOwner.id !== id) });
   } catch (error) {
-    if (error instanceof Error && error.message.startsWith("SCHEDULE_REVIEW:")) {
-      return NextResponse.json({ error: `This leave change affects an existing schedule (${error.message.slice("SCHEDULE_REVIEW:".length)}). Reopen and regenerate that schedule first, then save the leave change so the roster, tasks, and breaks remain consistent.` }, { status: 409 });
-    }
+    if (error instanceof Error && error.message === "PAST_LEAVE") return NextResponse.json({ error: "Past leave history is preserved. Choose today or a future date for availability changes." }, { status: 409 });
     return NextResponse.json({ error: "The employee could not be saved. Check that the Slack ID is unique and try again." }, { status: 409 });
   }
 }

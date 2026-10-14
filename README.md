@@ -8,10 +8,12 @@ This is a new application that brings together the strongest parts of the existi
 
 - One shared team directory for schedules, tasks, leave, and Slack
 - Calendar-based monthly schedule generation and approval
+- History-aware night/weekend balancing across months and years, with reviewable rest exceptions
 - Preferred shifts, preferred days off, annual leave, emergency leave, comp off, public holidays, sick leave, and bilingual coverage
 - Per-day staffing rules for headcount, calls, chats, tickets, and bilingual coverage
 - Manual schedule corrections with protected published history
 - Daily task assignments, notes, flexible breaks, and eligibility enforcement
+- Explicit one-day manual break-duration exceptions without changing normal settings
 - Manual and scheduled Slack posting
 - Automatic daily-plan preparation when a monthly schedule is approved
 - Weekly batch preparation and a final automatic plan check before each Slack post
@@ -77,9 +79,13 @@ Never commit real tokens. If a token has been shared in chat or source control, 
 
 ## Weekly operational audit
 
-After generating and approving a schedule, run `npm run audit:week -- YYYY-MM-DD` with the Monday date to validate one complete week. If you are using Docker, run `docker compose exec app npm run audit:week -- YYYY-MM-DD` instead. The audit checks account and late-shift coverage, five working days, consecutive days off, Calls and focus-task ownership, break duration and cover, WFH rules, leave handling, and Slack member IDs. It does not send Slack messages.
+After generating and approving a schedule, run `npm run audit:week -- YYYY-MM-DD` with the configured week-start date to validate one complete week. If you are using Docker, run `docker compose exec app npm run audit:week -- YYYY-MM-DD` instead. The audit checks account and night-shift coverage, work limits, rest exceptions, Calls and focus-task ownership, break duration and cover, WFH rules, leave handling, and Slack member IDs. It does not send Slack messages.
+
+With development dependencies installed, `npm run test:core` runs regression tests for tasks, leave, break exceptions, acknowledgements and cross-month scheduling. See [scheduling fairness](docs/SCHEDULING-FAIRNESS.md) and [the three-month test results](docs/FAIRNESS-TEST-2026-10-14.md).
 
 ## Deployment
+
+For an existing database, read [the upgrade steps](docs/UPGRADE-2026-10-14.md) before starting the new build.
 
 The included container can run on any provider that supports Docker and persistent PostgreSQL. Before deployment:
 

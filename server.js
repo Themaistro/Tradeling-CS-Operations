@@ -143,6 +143,8 @@ app.prepare().then(async () => {
     const socket = new SocketModeClient({
       appToken,
     });
+    socket.on("connected", () => { global.__csSlackSocketStatus = { configured: true, connected: true, error: null, updatedAt: new Date().toISOString() }; });
+    socket.on("disconnected", () => { global.__csSlackSocketStatus = { configured: true, connected: false, error: "Socket Mode disconnected; reconnecting.", updatedAt: new Date().toISOString() }; });
     socket.on("error", (error) => {
       global.__csSlackSocketStatus = { configured: true, connected: false, error: error?.message || "Socket Mode connection failed.", updatedAt: new Date().toISOString() };
       console.error("Slack Socket Mode connection failed", error);
@@ -156,17 +158,26 @@ app.prepare().then(async () => {
           where: { slackId: body.user.id },
         });
         if (!employee) return;
-        const date = new Date(`${action.value}T00:00:00.000Z`);
+        const [dateValue, revisionValue] = String(action.value || "").split("|");
+        if (!/^\d{4}-\d{2}-\d{2}$/.test(dateValue)) return;
+        const date = new Date(`${dateValue}T00:00:00.000Z`);
+        const planRevision = Number(revisionValue || 1);
+        const [plan, post] = await Promise.all([
+          prisma.dailyPlan.findUnique({ where: { date } }),
+          prisma.slackPostLog.findFirst({ where: { scheduleDate: date, messageTs: body.message?.ts, status: "SENT" } }),
+        ]);
+        if (!post || planRevision !== (plan?.revision || 1) || planRevision !== post.planRevision) return;
         const tasks = await prisma.taskAssignment.findMany({
           where: { date, employeeId: employee.id },
         });
         for (const task of tasks)
           await prisma.acknowledgement.upsert({
             where: {
-              employeeId_taskCategoryId_scheduleDate: {
+              employeeId_taskCategoryId_scheduleDate_planRevision: {
                 employeeId: employee.id,
                 taskCategoryId: task.categoryId,
                 scheduleDate: date,
+                planRevision,
               },
             },
             create: {
@@ -174,6 +185,7 @@ app.prepare().then(async () => {
               taskCategoryId: task.categoryId,
               scheduleDate: date,
               slackMessageTs: body.message.ts,
+              planRevision,
             },
             // An acknowledgement is a first-confirmation record. Repeat button
             // clicks must not replace the original acknowledgement time.

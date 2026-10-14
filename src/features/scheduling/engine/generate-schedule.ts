@@ -11,6 +11,7 @@ type Input = {
   maxWeeklyDays?: number;
   weekStartsOn?: number;
   priorAssignments?: Record<string, PriorScheduleEntry[]>;
+  fairnessHistory?: Record<string, PriorScheduleEntry[]>;
   variationSeed?: number;
   startDate?: string;
 };
@@ -61,11 +62,17 @@ function isWorking(status: GeneratedAssignment["status"]) {
   return status === "WORKING";
 }
 
-export function generateSchedule(input: Input) {
+export function generateSchedule(input: Input, searchAttempt = 0): { assignments: GeneratedAssignment[]; warnings: ScheduleWarning[] } {
   const monthStart = startOfMonth(new Date(input.year, input.month - 1, 1));
   const requestedStart = input.startDate ? new Date(`${input.startDate}T12:00:00`) : monthStart;
   const first = requestedStart > monthStart ? requestedStart : monthStart;
-  const days = eachDayOfInterval({ start: first, end: endOfMonth(first) });
+  const weekStartsOn = input.weekStartsOn ?? 0;
+  const monthEnd = endOfMonth(first);
+  const planningEnd = new Date(monthEnd);
+  planningEnd.setDate(planningEnd.getDate()+((weekStartsOn+6-planningEnd.getDay()+7)%7));
+  // Check the rest of the final week before spending its remaining capacity.
+  // These look-ahead days guide the boundary only; they are never persisted.
+  const days = eachDayOfInterval({ start: first, end: planningEnd });
   const assignments: GeneratedAssignment[] = [];
   const warnings: ScheduleWarning[] = [];
   const workCount = new Map<string, number>();
@@ -74,10 +81,9 @@ export function generateSchedule(input: Input) {
   const requiredRecoveryDays = new Map<string, number>();
   const weeklyCount = new Map<string, number>();
   const weeklyShift = new Map<string, string>();
-  const weekStartsOn = input.weekStartsOn ?? 0;
   const rotationOrder = [...input.employees].sort((left, right) => left.name.localeCompare(right.name));
   const lateShift = [...input.shifts].sort((left, right) => right.startTime.localeCompare(left.startTime))[0];
-  const consecutiveOffPlan = buildConsecutiveOffPlan(input);
+  let consecutiveOffPlan: Map<string, Set<number>> | null = null;
   const lateCount = new Map<string, number>();
   const weekendLateCount = new Map<string, number>();
   const lateOwnerByWeek = new Map<string, ScheduleEmployee | null>();
@@ -111,7 +117,10 @@ export function generateSchedule(input: Input) {
     }
     consecutive.set(employee.id, run);
     weeklyCount.set(employee.id, [...history.values()].filter((entry) => isWorking(entry.status) && weekKeyFor(new Date(`${entry.date}T12:00:00`)) === currentWeek).length);
-    const priorLate = [...history.values()].filter((entry) => entry.status === "WORKING" && entry.shiftId === lateShift?.id);
+    const fairnessRows = [...new Map((input.fairnessHistory?.[employee.id] ?? input.priorAssignments?.[employee.id] ?? []).filter(entry=>entry.date < format(first,"yyyy-MM-dd")).map(entry=>[entry.date,entry])).values()];
+    workCount.set(employee.id, fairnessRows.filter(entry=>entry.status === "WORKING").length);
+    for (const shift of input.shifts) shiftCount.set(`${employee.id}:${shift.id}`,fairnessRows.filter(entry=>entry.status === "WORKING" && entry.shiftId === shift.id).length);
+    const priorLate = fairnessRows.filter((entry) => entry.status === "WORKING" && entry.shiftId === lateShift?.id);
     lateCount.set(employee.id, priorLate.length);
     weekendLateCount.set(employee.id, priorLate.filter((entry) => [0, 6].includes(new Date(`${entry.date}T12:00:00`).getDay())).length);
 
@@ -128,6 +137,7 @@ export function generateSchedule(input: Input) {
     }
     requiredRecoveryDays.set(employee.id, precedingWorkRun >= input.maxConsecutiveDays ? Math.max(0, 2 - recoveryDaysTaken) : run >= input.maxConsecutiveDays ? 2 : 0);
   }
+  consecutiveOffPlan = buildConsecutiveOffPlan(input);
 
   for (const date of days) {
     const dateKey = format(date, "yyyy-MM-dd");
@@ -225,14 +235,15 @@ export function generateSchedule(input: Input) {
     for (const [date, status] of changes) statuses.set(date, status);
     const orderedDates = [...statuses.keys()].sort();
     if (!orderedDates.length) return true;
-    const cursor = new Date(`${orderedDates[0]}T12:00:00`);
-    const end = new Date(`${orderedDates.at(-1)}T12:00:00`);
     let run = 0;
-    while (cursor <= end) {
-      const status = statuses.get(format(cursor, "yyyy-MM-dd"));
+    let previousDate = -Infinity;
+    for (const date of orderedDates) {
+      const stamp = Date.parse(`${date}T12:00:00Z`);
+      if (stamp - previousDate !== 86400000) run = 0;
+      const status = statuses.get(date);
       run = status === "WORKING" ? run + 1 : 0;
       if (run > input.maxConsecutiveDays) return false;
-      cursor.setDate(cursor.getDate() + 1);
+      previousDate = stamp;
     }
     return true;
   };
@@ -286,7 +297,61 @@ export function generateSchedule(input: Input) {
       }
     }
   }
-  const retainedWarnings = warnings.filter((warning) => warning.code !== "STAFF_SHORTAGE" && warning.code !== "BILINGUAL_SHORTAGE");
+  // Prefer whole-week pattern swaps, then try compensated within-week exchanges
+  // when the month boundary prevents a complete swap. Daily staffing, history,
+  // leave, qualification and work limits are preserved; fairness stays a target.
+  const indexed = new Map(assignments.map(a=>[`${a.employeeId}:${a.date}`,a]));
+  const generatedWeeks = Map.groupBy(days,date=>weekKeyFor(date));
+  const dateInfo = new Map<string, { weekend:boolean;week:string;previous:string;next:string }>();
+  for(const date of new Set([...Object.values(input.fairnessHistory ?? input.priorAssignments ?? {}).flat().map(a=>a.date),...assignments.map(a=>a.date)])) {
+    const parsed=new Date(`${date}T12:00:00`),previous=new Date(parsed),next=new Date(parsed);previous.setDate(previous.getDate()-1);next.setDate(next.getDate()+1);
+    dateInfo.set(date,{week:weekKeyFor(parsed),weekend:[0,6].includes(parsed.getDay()),previous:format(previous,"yyyy-MM-dd"),next:format(next,"yyyy-MM-dd")});
+  }
+  const burden = (employeeId: string) => {
+    const records = new Map([...(input.fairnessHistory?.[employeeId] ?? input.priorAssignments?.[employeeId] ?? []),...assignments.filter(a=>a.employeeId === employeeId)].map(a=>[a.date,a]));
+    let weekends=0, nights=0, split=0;
+    for (const row of records.values()) if (row.status === "WORKING") { if (dateInfo.get(row.date)?.weekend) weekends++; if(row.shiftId === lateShift?.id)nights++; }
+    for (const rows of Map.groupBy([...records.values()],a=>dateInfo.get(a.date)!.week).values()) {
+      if(rows.length !== 7 || !rows.some(a=>a.status === "WORKING"))continue;
+      const pair=rows.some(a=>a.status !== "WORKING" && [dateInfo.get(a.date)!.previous,dateInfo.get(a.date)!.next].some(adjacent=>{const other=records.get(adjacent);return other && other.status !== "WORKING";}));
+      if(!pair)split++;
+    }
+    return {score:weekends*weekends*100+nights*nights*25+split*split*60+split*500,split};
+  };
+  let balanced=false;
+  for(let pass=0;pass<4;pass++) {
+    let improved=false;
+    for(const [week,weekDays] of generatedWeeks) {
+      if(weekDays.length !== 7)continue;
+      for(let left=0;left<input.employees.length;left++)for(let right=left+1;right<input.employees.length;right++) {
+        const a=input.employees[left],b=input.employees[right];
+        const allPairs=weekDays.map(date=>[indexed.get(`${a.id}:${format(date,"yyyy-MM-dd")}`)!,indexed.get(`${b.id}:${format(date,"yyyy-MM-dd")}`)!]);
+        const aWorking=allPairs.filter(([x,y])=>x.status === "WORKING" && y.status === "OFF");
+        const bWorking=allPairs.filter(([x,y])=>x.status === "OFF" && y.status === "WORKING");
+        const sharedWorking=allPairs.filter(([x,y])=>x.status === "WORKING" && y.status === "WORKING" && x.shiftId !== y.shiftId);
+        const sharedDirections=[...Map.groupBy(sharedWorking,([x,y])=>`${x.shiftId}:${y.shiftId}`).values()];
+        const candidates=[allPairs,...(sharedWorking.length?[sharedWorking]:[]),...sharedDirections,...aWorking.flatMap(x=>bWorking.map(y=>[x,y]))];
+        if(aWorking.length === bWorking.length && aWorking.length > 1)candidates.push([...aWorking,...bWorking]);
+        for(const pairs of candidates) {
+        if(pairs.some(([x,y])=>!["OFF","WORKING"].includes(x.status)||!["OFF","WORKING"].includes(y.status)))continue;
+        if(pairs.every(([x,y])=>x.status === y.status && x.shiftId === y.shiftId))continue;
+        const qualifies=(employee:ScheduleEmployee,row:GeneratedAssignment)=> row.status !== "WORKING" || Boolean(input.shifts.find(s=>s.id === row.shiftId && canCoverShift(employee.id,s,new Date(`${row.date}T12:00:00`).getDay())));
+        if(pairs.some(([x,y])=>!qualifies(a,y)||!qualifies(b,x)))continue;
+        const preferenceCost=(employee:ScheduleEmployee,rows:GeneratedAssignment[])=>rows.reduce((sum,row)=>sum+(row.status === "WORKING"?(employee.dayOffPreferences.find(p=>p.dayOfWeek === new Date(`${row.date}T12:00:00`).getDay())?.rank === 1?2:employee.dayOffPreferences.some(p=>p.dayOfWeek === new Date(`${row.date}T12:00:00`).getDay())?1:0)+(employee.preferredShiftId && employee.preferredShiftId !== row.shiftId?1:0):0),0);
+        if(preferenceCost(a,pairs.map(([,y])=>y))+preferenceCost(b,pairs.map(([x])=>x))>preferenceCost(a,pairs.map(([x])=>x))+preferenceCost(b,pairs.map(([,y])=>y)))continue;
+        const beforeA=burden(a.id),beforeB=burden(b.id);
+        const saved=pairs.map(([x,y])=>[{status:x.status,shiftId:x.shiftId},{status:y.status,shiftId:y.shiftId}]);
+        pairs.forEach(([x,y])=>{const status=x.status,shiftId=x.shiftId;x.status=y.status;x.shiftId=y.shiftId;y.status=status;y.shiftId=shiftId;});
+        const afterA=burden(a.id),afterB=burden(b.id);
+        const validLanguage=a.isBilingual === b.isBilingual || pairs.every(([row])=>input.shifts.every(shift=>assignments.filter(other=>other.date === row.date&&other.status === "WORKING"&&other.shiftId === shift.id&&employeeById.get(other.employeeId)?.isBilingual).length >= (shift.bilingualByDay[new Date(`${row.date}T12:00:00`).getDay()] ?? 0)));
+        if(afterA.score+afterB.score < beforeA.score+beforeB.score && validLanguage && respectsConsecutiveLimit(a.id,new Map()) && respectsConsecutiveLimit(b.id,new Map()) && weeklyWorkCount(a.id,week)<=maximumWeeklyDays && weeklyWorkCount(b.id,week)<=maximumWeeklyDays) { improved=true;balanced=true; }
+        else pairs.forEach(([x,y],index)=>{Object.assign(x,saved[index][0]);Object.assign(y,saved[index][1]);});
+        }
+      }
+    }
+    if(!improved)break;
+  }
+  const retainedWarnings = warnings.filter((warning) => warning.code !== "STAFF_SHORTAGE" && warning.code !== "BILINGUAL_SHORTAGE" && !(balanced && warning.code === "REST_PATTERN_OVERRIDE"));
   warnings.splice(0, warnings.length, ...retainedWarnings);
   for (const date of days) {
     const dateKey = format(date, "yyyy-MM-dd");
@@ -300,5 +365,29 @@ export function generateSchedule(input: Input) {
       if (bilingual < requiredBilingual) warnings.push({ date: dateKey, shiftId: shift.id, severity: "critical", code: "BILINGUAL_SHORTAGE", message: `${shift.name} needs ${requiredBilingual - bilingual} more bilingual team member(s).` });
     }
   }
-  return { assignments, warnings };
+  // Repairs can move OFF days after the initial rest plan was checked. Retain
+  // a reviewable exception for the final roster rather than losing that change.
+  const generatedKeys = new Set(assignments.map(a=>`${a.employeeId}:${a.date}`));
+  if ((input.maxWeeklyDays ?? 5) === 5) for (const employee of input.employees) {
+    const history = new Map([...(input.priorAssignments?.[employee.id] ?? []), ...assignments.filter(a=>a.employeeId === employee.id)].map(a=>[a.date,a]));
+    const weeks = Map.groupBy([...history.values()], a=>weekKeyFor(new Date(`${a.date}T12:00:00`)));
+    for (const [week, rows] of weeks) {
+      if (rows.length < 7 || !rows.some(a=>generatedKeys.has(`${employee.id}:${a.date}`))) continue;
+      const hasPair = rows.some(a=> {
+        if (a.status === "WORKING") return false;
+        return [-1,1].some(offset=> { const adjacent = new Date(`${a.date}T12:00:00`); adjacent.setDate(adjacent.getDate()+offset); const other=history.get(format(adjacent,"yyyy-MM-dd"));return other && other.status !== "WORKING"; });
+      });
+      if (!hasPair) warnings.push({ date:week,shiftId:`rest:${employee.id}`,severity:"warning",code:"REST_PATTERN_OVERRIDE",message:`${employee.name} does not have two consecutive rest days in the week of ${week}. Review and accept this rest exception.` });
+    }
+  }
+  const finalDate=format(monthEnd,"yyyy-MM-dd");
+  const result = { assignments:assignments.filter(a=>a.date<=finalDate), warnings:warnings.filter(w=>w.date<=finalDate) };
+  // A greedy placement can paint itself into a corner despite a feasible team.
+  // Try a bounded alternate ordering; never relax a coverage or work-limit rule.
+  const critical=result.warnings.filter(w=>w.severity === "critical").length;
+  if(critical && searchAttempt < 5) {
+    const alternative=generateSchedule({...input,variationSeed:variationRank(input.variationSeed ?? 0,`${input.year}:${input.month}:repair:${searchAttempt}`)},searchAttempt+1);
+    if(alternative.warnings.filter(w=>w.severity === "critical").length < critical)return alternative;
+  }
+  return result;
 }

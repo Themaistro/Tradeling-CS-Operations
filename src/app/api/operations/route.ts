@@ -1,8 +1,9 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
 import { prisma } from "@/lib/db/prisma";
+import { clock, operationToday } from "@/lib/validation";
 
-const time = z.string().regex(/^\d{2}:\d{2}$/);
+const time = clock;
 const day = z.number().int().min(0).max(6);
 const actions = z.discriminatedUnion("action", [
   z.object({ action: z.literal("createAccount"), name: z.string().trim().min(2).max(80), code: z.string().trim().min(2).max(20).regex(/^[A-Za-z0-9_-]+$/), color: z.string().default("blue"), copyFromId: z.string().optional() }),
@@ -36,7 +37,23 @@ export async function POST(request: Request) {
       const account = await prisma.$transaction(async (tx) => tx.account.create({ data: { name: data.name, code: data.code.toUpperCase(), color: source.color, operatingWindows: { create: source.operatingWindows.map(({ dayOfWeek, startTime, endTime }) => ({ dayOfWeek, startTime, endTime })) }, coverageRequirements: { create: source.coverageRequirements.map(({ dayOfWeek, startTime, endTime, minimumStaff, minimumBilingual }) => ({ dayOfWeek, startTime, endTime, minimumStaff, minimumBilingual })) }, taskCategories: { create: source.taskCategories.map(({ name, icon, color, order, groupName, isLive, mode, defaultPriority, rotationOrder }) => ({ name, icon, color, order, groupName, isLive, mode, defaultPriority, rotationOrder })) }, employeeCapabilities: { create: source.employeeCapabilities.map(({ employeeId }) => ({ employeeId })) } } }));
       return NextResponse.json(account, { status: 201 });
     }
-    if (data.action === "updateAccount") return NextResponse.json(await prisma.account.update({ where: { id: data.id }, data: { name: data.name, code: data.code.toUpperCase(), active: data.active } }));
+    if (data.action === "updateAccount") {
+      const original = await prisma.account.findUnique({ where: { id: data.id } });
+      const settings = await prisma.appSettings.findUnique({ where: { id: "global" } });
+      const saved = await prisma.$transaction(async tx=> {
+        const account = await tx.account.update({ where: { id: data.id }, data: { name: data.name, code: data.code.toUpperCase(), active: data.active } });
+        if (original && original.name !== data.name) {
+          const rows = await tx.taskAssignment.findMany({ where: { date: { gte: new Date(`${operationToday(settings?.timezone || "UTC")}T00:00:00Z`) }, note: { contains: original.name } } });
+          for (const row of rows) {
+            const [prefix,...detail] = (row.note || "").split(" · ");
+            const names = prefix.split(" + ");
+            if (names.includes(original.name)) await tx.taskAssignment.update({ where: { id: row.id }, data: { note: [names.map(name=>name===original.name?data.name:name).join(" + "),...detail].join(" · ") } });
+          }
+        }
+        return account;
+      });
+      return NextResponse.json(saved);
+    }
     if (data.action === "addWindow") {
       if (data.endTime <= data.startTime) return NextResponse.json({ error: "Operating end time must be after its start time." }, { status: 400 });
       const { action: _, ...window } = data; void _;

@@ -1,9 +1,12 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
 import { prisma } from "@/lib/db/prisma";
+import { operationHash } from "@/lib/daily-plan";
+import { mainBreakCover } from "@/lib/main-break-cover";
+import { dateKey as validDate, operationToday } from "@/lib/validation";
 
 const schema = z.object({
-  date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+  date: validDate,
   replace: z.boolean().default(false),
 });
 
@@ -32,6 +35,7 @@ export async function POST(request: Request) {
     prisma.breakSchedule.count({ where: { date } }),
     prisma.appSettings.upsert({ where: { id: "global" }, create: { id: "global" }, update: {} }),
   ]);
+  if (parsed.data.date < operationToday(settings.timezone)) return NextResponse.json({ error: "Past daily plans are preserved. Choose today or a future date." }, { status: 409 });
   if (!assignments.length) return NextResponse.json({ error: "Approve a working roster for this date before building the daily plan." }, { status: 409 });
   if ((existingTasks || existingBreaks) && !parsed.data.replace) return NextResponse.json({ error: "This day already contains tasks or breaks.", code: "PLAN_EXISTS", existingTasks, existingBreaks }, { status: 409 });
   if (!categories.length) return NextResponse.json({ error: "Add at least one active task category first." }, { status: 409 });
@@ -51,6 +55,7 @@ export async function POST(request: Request) {
     const relevantAccountIds = new Set(relevantAccounts.map((account) => account.id));
     const relevantCategories = categories.filter((category) => category.accountId && relevantAccountIds.has(category.accountId));
     const grouped = Map.groupBy(relevantCategories, (category) => normalizeQueue(category.name));
+    for (const items of grouped.values()) if (items.some(item=>item.mode !== items[0].mode || item.defaultPriority !== items[0].defaultPriority || item.isLive !== items[0].isLive)) return NextResponse.json({ error: `The shared task ${items[0].name} has conflicting account settings. Align its assignment method, priority and live-coverage setting, or use distinct task names.` }, { status: 409 });
     const queues = [...grouped.values()].map((items) => {
       const accountNames = relevantAccounts.filter((account) => items.some((item) => item.accountId === account.id)).map((account) => account.name);
       const requirements = relevantAccounts.flatMap((account) => account.coverageRequirements.filter((requirement) => requirement.dayOfWeek === weekday && shift.startTime <= requirement.startTime && shift.endTime >= requirement.endTime));
@@ -84,7 +89,7 @@ export async function POST(request: Request) {
       })[0];
       if (!unassigned.length && shiftAssignments.length > 1) warnings.push(`${assignment.employee.name} must cover more than one focus queue on ${shift.name} because no additional eligible agent is available.`);
       focusOwners.add(assignment.employeeId);
-      taskRows.push({ date, employeeId: assignment.employeeId, categoryId: queue.category.id, priority: 1, startTime: queue.startTime, endTime: queue.endTime, note: `${queue.accountNames.join(" + ")} · primary focus` });
+      taskRows.push({ date, employeeId: assignment.employeeId, categoryId: queue.category.id, priority: queue.category.defaultPriority, startTime: queue.startTime, endTime: queue.endTime, note: `${queue.accountNames.join(" + ")} · primary focus` });
     }
     for (const queue of queues.filter((item) => item.category.mode === "EVERYONE")) for (const assignment of eligible(queue)) {
       taskRows.push({ date, employeeId: assignment.employeeId, categoryId: queue.category.id, priority: queue.category.defaultPriority, startTime: queue.startTime, endTime: queue.endTime, note: queue.accountNames.join(" + ") });
@@ -95,6 +100,21 @@ export async function POST(request: Request) {
       const assignment = candidates.sort((left, right) => taskRows.filter((item) => item.employeeId === left.employeeId).length - taskRows.filter((item) => item.employeeId === right.employeeId).length)[0];
       taskRows.push({ date, employeeId: assignment.employeeId, categoryId: queue.category.id, priority: queue.category.defaultPriority, startTime: queue.startTime, endTime: queue.endTime, note: queue.accountNames.join(" + ") });
     }
+  }
+
+  // Everyone responsibilities use each worker's complete intersection with
+  // account service periods, including a lone afternoon shift.
+  for (const assignment of assignments) for (const category of categories.filter(c=>c.mode === "EVERYONE")) {
+    const account = accounts.find(a=>a.id === category.accountId);
+    const shift = assignment.shift;
+    if (!account || !shift || !account.employeeCapabilities.some(c=>c.employeeId === assignment.employeeId)) continue;
+    const windows = account.coverageRequirements.filter(w=>w.dayOfWeek === weekday && w.startTime < shift.endTime && w.endTime > shift.startTime);
+    if (!windows.length) continue;
+    const startTime = windows.map(w=>w.startTime > shift.startTime ? w.startTime : shift.startTime).sort()[0];
+    const endTime = windows.map(w=>w.endTime < shift.endTime ? w.endTime : shift.endTime).sort().at(-1)!;
+    const existing = taskRows.find(r=>r.employeeId === assignment.employeeId && r.categoryId === category.id);
+    if (existing) { existing.startTime = startTime; existing.endTime = endTime; existing.priority = category.defaultPriority; }
+    else if (!taskRows.some(r=>r.employeeId === assignment.employeeId && normalizeQueue(categoryById.get(r.categoryId)?.name || "") === normalizeQueue(category.name) && r.note.split(" + ").includes(account.name) && r.startTime! <= startTime && r.endTime! >= endTime)) taskRows.push({date,employeeId:assignment.employeeId,categoryId:category.id,priority:category.defaultPriority,startTime,endTime,note:account.name});
   }
 
   // An afternoon/night shift shares daytime coverage before becoming
@@ -112,24 +132,6 @@ export async function POST(request: Request) {
     const lateAccountIds = new Set(accountsCoveredForWholeShift(overlapShift).map((account) => account.id));
     const overlapCategories = categories.filter((category) => category.accountId && overlapAccounts.some((account) => account.id === category.accountId));
     const overlapQueues = [...Map.groupBy(overlapCategories, (category) => normalizeQueue(category.name)).entries()];
-    // Everyone responsibilities continue through shared account hours, whether
-    // or not there is a daytime staffing shortage. Keep account windows intact.
-    for (const category of overlapCategories.filter((item) => item.mode === "EVERYONE")) {
-      const account = overlapAccounts.find((item) => item.id === category.accountId);
-      if (!account) continue;
-      const windows = account.coverageRequirements.filter((item) => item.dayOfWeek === weekday && toMinutes(item.startTime) < overlapEnd && toMinutes(item.endTime) > overlapStart);
-      if (!windows.length) continue;
-      const startTime = toTime(Math.max(overlapStart, Math.min(...windows.map((item) => toMinutes(item.startTime)))));
-      const endTime = toTime(Math.min(overlapEnd, Math.max(...windows.map((item) => toMinutes(item.endTime)))));
-      for (const assignment of overlapGroup.filter((item) => account.employeeCapabilities.some((capability) => capability.employeeId === item.employeeId))) {
-        const existing = taskRows.find((row) => row.employeeId === assignment.employeeId && row.categoryId === category.id);
-        if (existing) {
-          existing.startTime = existing.startTime && existing.startTime < startTime ? existing.startTime : startTime;
-          existing.endTime = existing.endTime && existing.endTime > endTime ? existing.endTime : endTime;
-          existing.priority = category.defaultPriority;
-        } else taskRows.push({ date, employeeId: assignment.employeeId, categoryId: category.id, priority: category.defaultPriority, startTime, endTime, note: account.name });
-      }
-    }
     const dayEmployeeIds = new Set(dayGroup.map((assignment) => assignment.employeeId));
     const coveredDayFocus = new Set(taskRows.filter((row) => dayEmployeeIds.has(row.employeeId) && categoryById.get(row.categoryId)?.mode === "FOCUS").map((row) => normalizeQueue(categoryById.get(row.categoryId)?.name ?? "")));
     const supportCategory = (items: typeof categories) => items.find((category) => !lateAccountIds.has(category.accountId ?? "") && !taskRows.some((row) => row.employeeId === overlapGroup[0]!.employeeId && row.categoryId === category.id));
@@ -147,7 +149,8 @@ export async function POST(request: Request) {
     // If there are fewer Day agents than daytime focus queues, move a
     // non-live focus responsibility to the overlapping shift rather than
     // giving two primary responsibilities to a Day agent.
-    let remainingCover = Math.max(0, focusQueues.length - dayGroup.length);
+    const singleAgentService = dayGroup.length === 1 && overlapAccounts.length === 1 && overlapAccounts[0].coverageRequirements.filter(r=>r.dayOfWeek === weekday && toMinutes(r.startTime)<overlapEnd && toMinutes(r.endTime)>overlapStart).every(r=>r.minimumStaff === 1);
+    let remainingCover = singleAgentService ? 0 : Math.max(0, focusQueues.length - dayGroup.length);
     const transferableFocus = focusQueues
       .map(([queueName, items]) => ({ queueName, items, row: taskRows.find((row) => dayEmployeeIds.has(row.employeeId) && normalizeQueue(categoryById.get(row.categoryId)?.name ?? "") === queueName) }))
       .filter((item): item is { queueName: string; items: typeof categories; row: (typeof taskRows)[number] } => Boolean(item.row))
@@ -169,14 +172,14 @@ export async function POST(request: Request) {
     }
   }
 
-  const breakRows: { date: Date; employeeId: string; type: "MAIN" | "SHORT"; startTime: string; endTime: string }[] = [];
+  const breakRows: { date: Date; employeeId: string; type: "MAIN" | "SHORT"; startTime: string; endTime: string; coverEmployeeId?: string | null }[] = [];
   const findSlot = (employeeId: string, type: "MAIN" | "SHORT", earliest: number, latestEnd: number, duration: number) => {
     for (let start = earliest; start + duration <= latestEnd; start += 10) {
       const end = start + duration;
       const conflicts = type === "MAIN" && breakRows.filter((item) => item.type === "MAIN" && toMinutes(item.startTime) < end + settings.breakGapMinutes && toMinutes(item.endTime) + settings.breakGapMinutes > start).length >= settings.maxConcurrentMainBreaks;
       if (conflicts) continue;
       const covered = assignments.some((assignment) => assignment.employeeId !== employeeId && assignment.shift && toMinutes(assignment.shift.startTime) <= start && toMinutes(assignment.shift.endTime) >= end && !breakRows.some((item) => item.employeeId === assignment.employeeId && toMinutes(item.startTime) < end && toMinutes(item.endTime) > start));
-      if (covered) return { start, end };
+      if (covered && (type === "SHORT" || mainBreakCover(employeeId, toTime(start), toTime(end), weekday, assignments, breakRows, accounts))) return { start, end };
     }
     return null;
   };
@@ -205,6 +208,11 @@ export async function POST(request: Request) {
     breakRows.push({ date, employeeId: assignment.employeeId, type: "SHORT", startTime: toTime(slot.start), endTime: toTime(slot.end) });
   }
 
+  for (const row of breakRows.filter(item => item.type === "MAIN")) {
+    row.coverEmployeeId = mainBreakCover(row.employeeId, row.startTime, row.endTime, weekday, assignments, breakRows, accounts);
+    if (!row.coverEmployeeId) warnings.push(`Review ${row.employeeId}'s main break: no qualified live-service cover remains available.`);
+  }
+  const configHash = await operationHash();
   await prisma.$transaction(async (tx) => {
     if (parsed.data.replace) {
       await tx.taskAssignment.deleteMany({ where: { date } });
@@ -212,6 +220,7 @@ export async function POST(request: Request) {
     }
     if (taskRows.length) await tx.taskAssignment.createMany({ data: taskRows });
     if (breakRows.length) await tx.breakSchedule.createMany({ data: breakRows });
+    await tx.dailyPlan.upsert({ where: { date }, create: { date, configHash, revision: parsed.data.replace ? 2 : 1 }, update: { configHash, revision: { increment: 1 } } });
   });
   return NextResponse.json({ ok: true, tasksCreated: taskRows.length, breaksCreated: breakRows.length, warnings: [...new Set(warnings)] });
 }

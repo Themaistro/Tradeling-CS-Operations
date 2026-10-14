@@ -244,9 +244,9 @@ export default function TeamPage() {
           shifts={shifts}
           primaryLanguageLabel={primaryLanguageLabel}
           onClose={() => setSelected(null)}
-          onSaved={async () => {
+          onSaved={async (affectedPeriods) => {
             setSelected(null);
-            setMessage("Employee availability updated.");
+            setMessage(affectedPeriods?.length ? `Employee availability saved. Review and approve the affected schedule: ${affectedPeriods.join(", ")}.` : "Employee availability updated.");
             await load();
           }}
         />
@@ -265,7 +265,7 @@ function EmployeeEditor({
   shifts: Shift[];
   primaryLanguageLabel: string;
   onClose: () => void;
-  onSaved: () => void;
+  onSaved: (affectedPeriods?: string[]) => void;
 }) {
   const [daysOff, setDaysOff] = useState(
     employee.dayOffPreferences.map((d) => d.dayOfWeek),
@@ -293,7 +293,7 @@ function EmployeeEditor({
       }),
     });
     const body = await r.json();
-    if (r.ok) await onSaved();
+    if (r.ok) await onSaved(body.affectedPeriods);
     else setError(body.error || "The employee could not be saved.");
     setSaving(false);
   }
@@ -378,7 +378,7 @@ function EmployeeEditor({
             <CalendarOff className="h-4 w-4 text-orange-500" />
             <div>
               <p className="text-sm font-bold">Leave and planned exceptions</p>
-              <p className="mt-1 text-xs text-slate-500">Add planned leave before generating the roster. Once a roster exists, reopen and regenerate it before changing planned leave. Emergency leave updates an existing schedule immediately.</p>
+              <p className="mt-1 text-xs text-slate-500">Save planned leave here. Affected future schedules reopen for review and approval. Emergency leave updates the selected day immediately. Past history is preserved.</p>
             </div>
           </div>
           <div className="mt-3 space-y-2">

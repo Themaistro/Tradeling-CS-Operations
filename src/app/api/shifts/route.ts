@@ -1,8 +1,9 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
 import { prisma } from "@/lib/db/prisma";
+import { clock } from "@/lib/validation";
 
-const schema = z.object({ name: z.string().trim().min(2), startTime: z.string().regex(/^\d{2}:\d{2}$/), endTime: z.string().regex(/^\d{2}:\d{2}$/), minimumStaff: z.number().int().min(0).max(100).default(0), minimumBilingual: z.number().int().min(0).max(100).default(0) }).refine((value)=>value.endTime>value.startTime,{message:"End time must be after start time."});
+const schema = z.object({ name: z.string().trim().min(2), startTime: clock, endTime: clock, minimumStaff: z.number().int().min(0).max(100).default(0), minimumBilingual: z.number().int().min(0).max(100).default(0) }).refine((value)=>value.endTime>value.startTime,{message:"End time must be after start time."});
 
 export async function GET() {
   const shifts = await prisma.shift.findMany({

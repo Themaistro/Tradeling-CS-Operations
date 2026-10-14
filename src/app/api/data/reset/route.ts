@@ -15,6 +15,7 @@ export async function POST(request: Request) {
       tx.slackPostLog.deleteMany(),
       tx.openingHistory.deleteMany(),
       tx.schedulePeriod.deleteMany(),
+      tx.dailyPlan.deleteMany(),
     ]);
     await tx.appSettings.upsert({
       where: { id: "global" },

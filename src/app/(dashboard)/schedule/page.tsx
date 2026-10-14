@@ -188,7 +188,7 @@ export default function SchedulePage() {
   const selectedWeek = weeks[Math.min(weekIndex, Math.max(0, weeks.length - 1))] ?? [];
   const visibleWeeks = [selectedWeek];
   const visibleDays = selectedWeek;
-  const shiftsByStart = [...shifts].sort((left, right) => left.startTime.localeCompare(right.startTime));
+  const shiftsByStart = [...new Map([...shifts, ...weeklyAssignments.map(a=>a.shift).filter((shift): shift is Shift=>Boolean(shift))].map(shift=>[shift.id,shift])).values()].sort((left, right) => left.startTime.localeCompare(right.startTime));
   const dayShift = shiftsByStart[0];
   const latestShift = shiftsByStart.at(-1);
   const dominantShiftFor = (employeeId: string) => {
@@ -200,18 +200,18 @@ export default function SchedulePage() {
     return [...counts.entries()].sort((left, right) => right[1] - left[1] || shiftsByStart.findIndex((shift) => shift.id === left[0]) - shiftsByStart.findIndex((shift) => shift.id === right[0]))[0]?.[0] ?? null;
   };
   const rosterSectionDefinitions = [
-    ...shiftsByStart.flatMap((shift) => [
-      { label: `${shift.name} · ${primaryLanguageLabel}`, shiftId: shift.id, bilingual: true },
-      { label: `${shift.name} · Other`, shiftId: shift.id, bilingual: false },
+    ...[...Map.groupBy(shiftsByStart, shift=>shift.name).entries()].flatMap(([name, versions]) => [
+      { label: `${name} · ${primaryLanguageLabel}`, shiftIds: versions.map(shift=>shift.id), bilingual: true },
+      { label: `${name} · Other`, shiftIds: versions.map(shift=>shift.id), bilingual: false },
     ]),
-    { label: "Not scheduled this week", shiftId: null, bilingual: null },
+    { label: "Not scheduled this week", shiftIds: [] as string[], bilingual: null },
   ];
   const rosterSections = rosterSectionDefinitions.map((section) => ({
     label: section.label,
     employees: employees.filter((employee) => {
       const dominantShiftId = dominantShiftFor(employee.id);
-      if (!section.shiftId) return !dominantShiftId;
-      return dominantShiftId === section.shiftId && employee.isBilingual === section.bilingual;
+      if (!section.shiftIds.length) return !dominantShiftId;
+      return Boolean(dominantShiftId && section.shiftIds.includes(dominantShiftId)) && employee.isBilingual === section.bilingual;
     }),
   })).filter((section) => section.employees.length);
   return (

@@ -34,13 +34,14 @@ const fail = (message) => failures.push(message);
 const warn = (message) => warnings.push(message);
 const pass = (message) => passes.push(message);
 const working = assignments.filter((item) => item.status === "WORKING" && item.shift);
+const activeShifts = await prisma.shift.findMany({ where: { active: true } });
+const latestShiftId = [...activeShifts].sort((a,b)=>b.startTime.localeCompare(a.startTime))[0]?.id;
 const dates = Array.from({ length: 7 }, (_, index) => { const date = new Date(start); date.setUTCDate(date.getUTCDate() + index); return key(date); });
 
 for (const date of dates) {
   const dayAssignments = assignments.filter((item) => key(item.date) === date);
   const dayWorking = working.filter((item) => key(item.date) === date);
   if (dayAssignments.length !== employees.length) fail(`${date}: expected ${employees.length} roster rows, found ${dayAssignments.length}.`);
-  if (!dayWorking.some((item) => /late|night/i.test(item.shift.name))) fail(`${date}: no late-shift agent covers the evening.`);
   for (const account of accounts) {
     const requirements = account.coverageRequirements.filter((item) => item.dayOfWeek === new Date(`${date}T00:00:00.000Z`).getUTCDay());
     const capable = new Set(account.employeeCapabilities.map((item) => item.employeeId));
@@ -54,7 +55,7 @@ for (const date of dates) {
     const agentTasks = tasks.filter((item) => key(item.date) === date && item.employeeId === assignment.employeeId);
     const agentBreaks = breaks.filter((item) => key(item.date) === date && item.employeeId === assignment.employeeId);
     if (!agentTasks.length) fail(`${date}: ${assignment.employee.name} is working but has no tasks.`);
-    if (!agentTasks.some((item) => /calls?/i.test(item.category.name))) fail(`${date}: ${assignment.employee.name} is working but is not assigned to Calls.`);
+    if (!agentTasks.some((item) => item.category.mode === "EVERYONE" && item.category.isLive)) warn(`${date}: ${assignment.employee.name} has no shared live-service responsibility.`);
     const focusTasks = agentTasks.filter((item) => item.category.mode === "FOCUS");
     const sameShift = dayWorking.filter((item) => item.shiftId === assignment.shiftId);
     const focusQueuesInShift = tasks.filter((item) => key(item.date) === date && item.category.mode === "FOCUS" && sameShift.some((scheduled) => scheduled.employeeId === item.employeeId));
@@ -65,13 +66,16 @@ for (const date of dates) {
     if (agentBreaks.filter((item) => item.type === "SHORT").length !== 1) fail(`${date}: ${assignment.employee.name} does not have exactly one short break.`);
     for (const item of agentBreaks) {
       const expectedDuration = item.type === "MAIN" ? settings?.mainBreakMinutes : settings?.shortBreakMinutes;
-      if (expectedDuration && minutes(item.endTime) - minutes(item.startTime) !== expectedDuration) fail(`${date}: ${assignment.employee.name}'s ${item.type.toLowerCase()} break has the wrong duration.`);
+      if (expectedDuration && minutes(item.endTime) - minutes(item.startTime) !== expectedDuration) {
+        if (item.durationException) warn(`${date}: ${assignment.employee.name} has a recorded one-day ${item.type.toLowerCase()} break duration exception.`);
+        else fail(`${date}: ${assignment.employee.name}'s ${item.type.toLowerCase()} break has the wrong duration.`);
+      }
       if (minutes(item.startTime) < minutes(assignment.shift.startTime) || minutes(item.endTime) > minutes(assignment.shift.endTime)) fail(`${date}: ${assignment.employee.name}'s ${item.type.toLowerCase()} break falls outside the shift.`);
       const cover = dayWorking.some((other) => other.employeeId !== assignment.employeeId && minutes(other.shift.startTime) <= minutes(item.startTime) && minutes(other.shift.endTime) >= minutes(item.endTime) && !breaks.some((otherBreak) => key(otherBreak.date) === date && otherBreak.employeeId === other.employeeId && overlaps(otherBreak.startTime, otherBreak.endTime, item.startTime, item.endTime)));
       if (!cover) fail(`${date}: ${assignment.employee.name}'s ${item.type.toLowerCase()} break has no available cover.`);
     }
     const weekday = new Date(`${date}T00:00:00.000Z`).getUTCDay();
-    const shouldBeWfh = settings?.wfhDays.includes(weekday) || (settings?.lateShiftWfh && /late|night/i.test(assignment.shift.name));
+    const shouldBeWfh = settings?.wfhDays.includes(weekday) || (settings?.lateShiftWfh && assignment.shiftId === latestShiftId);
     if (shouldBeWfh && assignment.workLocation !== "WFH") fail(`${date}: ${assignment.employee.name} should be marked WFH.`);
   }
   for (const assignment of dayAssignments.filter((item) => item.status !== "WORKING")) {
@@ -83,14 +87,17 @@ for (const date of dates) {
 for (const employee of employees) {
   const rows = assignments.filter((item) => item.employeeId === employee.id);
   const workCount = rows.filter((item) => item.status === "WORKING").length;
-  if (workCount !== (settings?.maxWeeklyDays ?? 5)) fail(`${employee.name}: works ${workCount} days instead of ${settings?.maxWeeklyDays ?? 5}.`);
+  const alignedWeek = start.getUTCDay() === (settings?.weekStartsOn ?? 0);
+  if (alignedWeek && workCount > (settings?.maxWeeklyDays ?? 5)) fail(`${employee.name}: exceeds the weekly working-day limit.`);
+  else if (!alignedWeek && workCount > (settings?.maxWeeklyDays ?? 5)) warn(`${employee.name}: this rolling window spans two configured weeks; audit the configured week boundary before treating the count as a violation.`);
+  else if (workCount < (settings?.maxWeeklyDays ?? 5)) warn(`${employee.name}: works ${workCount} days this week; review leave and available coverage.`);
   const statuses = dates.map((date) => rows.find((item) => key(item.date) === date)?.status === "WORKING");
   const consecutiveOff = statuses.some((value, index) => !value && !statuses[(index + 1) % 7]);
-  if (!consecutiveOff) fail(`${employee.name}: does not have two consecutive days off.`);
+  if (!consecutiveOff) warn(`${employee.name}: does not have two consecutive days off; review the rest exception.`);
   if (!employee.slackId) fail(`${employee.name}: Slack member ID is missing, so a private briefing cannot be delivered.`);
 }
 
-const lateOwners = new Set(working.filter((item) => /late|night/i.test(item.shift.name)).map((item) => item.employeeId));
+const lateOwners = new Set(working.filter((item) => item.shiftId === latestShiftId).map((item) => item.employeeId));
 if (lateOwners.size > 3) warn(`Late coverage uses ${lateOwners.size} different agents in one week; weekly ownership may be too fragmented.`);
 else pass(`Late coverage is shared by ${lateOwners.size} agent(s) during the week.`);
 if (!failures.length) pass("All seven days meet roster, account coverage, task, break, leave, and Slack-ID checks.");

@@ -57,7 +57,7 @@ type Data = {
   settings: Settings;
   shifts: Shift[];
   slackConfigured: boolean;
-  slackCredentials: { botTokenConfigured: boolean; appTokenConfigured: boolean };
+  slackCredentials: { botTokenConfigured: boolean; appTokenConfigured: boolean; botTokenFromHost?: boolean; appTokenFromHost?: boolean };
   postingHistory: {
     id: string;
     scheduleDate: string;
@@ -69,6 +69,7 @@ type Data = {
     error: string | null;
     postedAt: string | null;
     createdAt: string;
+    deliveries: { status: string; error: string | null }[];
   }[];
   readiness: {
     employees: number;
@@ -228,6 +229,17 @@ function formatScheduleDate(value: string, timezone: string) {
 
 function PostingHistoryPanel({ data, timezone }: { data: Data; timezone: string }) {
   const latest = data.postingHistory[0];
+  const [retrying, setRetrying] = useState("");
+  const [result, setResult] = useState("");
+  async function retry(postId: string) {
+    setRetrying(postId);
+    try {
+      const response = await fetch("/api/slack/retry", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ postId }) });
+      const body = await response.json();
+      setResult(response.ok ? `${body.sent} personal briefings delivered; ${body.failed} need review.` : body.error);
+    } catch { setResult("Delivery could not be confirmed. Check the connection and try again."); }
+    finally { setRetrying(""); }
+  }
 
   return (
     <div className="rounded-2xl border border-slate-200 bg-white p-5">
@@ -283,11 +295,14 @@ function PostingHistoryPanel({ data, timezone }: { data: Data; timezone: string 
                   {item.status}
                 </span>
                 {item.error && <p className="basis-full text-xs text-red-600">{item.error}</p>}
+                {item.deliveries?.length > 0 && <p className="basis-full text-xs text-slate-600">Personal briefings: {item.deliveries.filter(d=>d.status === "SENT").length} delivered · {item.deliveries.filter(d=>d.status !== "SENT").length} need review</p>}
+                {item.deliveries?.some(d=>["FAILED","SKIPPED"].includes(d.status)) && <button disabled={Boolean(retrying)} onClick={()=>void retry(item.id)} className="rounded-lg border border-blue-200 px-3 py-2 text-xs font-bold text-blue-700">{retrying === item.id ? "Retrying…" : "Retry failed personal briefings"}</button>}
               </div>
             </div>
           ))}
         </div>
       )}
+      {result && <p className="mt-3 rounded-xl bg-blue-50 p-3 text-sm text-blue-800">{result}</p>}
     </div>
   );
 }
@@ -398,7 +413,7 @@ export default function SettingsPage() {
     const values = new FormData(event.currentTarget);
     const response = await fetch(`/api/shifts/${id}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name: values.get("name"), startTime: values.get("startTime"), endTime: values.get("endTime") }) });
     const body = await response.json();
-    setNotice({ kind: response.ok ? "success" : "error", text: response.ok ? "Shift details updated. Future schedules will use the new times." : body.error });
+    setNotice({ kind: response.ok ? "success" : "error", text: response.ok ? (body.reviewRequired ? "Shift times saved. Past timings were preserved; review and approve the affected future schedules." : "Shift details updated.") : body.error });
     if (response.ok) await load();
     setSaving(false);
   }
@@ -819,6 +834,7 @@ export default function SettingsPage() {
                 <div className="rounded-2xl border border-slate-200 p-5">
                   <h3 className="font-bold text-slate-900">Slack credentials</h3>
                   <p className="mt-1 text-sm text-slate-500">Saved tokens are encrypted and are never displayed again. Leave a field empty to keep its existing value. Restart the application after changing either token.</p>
+                  {(data.slackCredentials.botTokenFromHost || data.slackCredentials.appTokenFromHost) && <p className="mt-3 rounded-xl bg-amber-50 p-3 text-xs text-amber-800">Host-provided credentials are currently active. Saved Settings tokens take effect after the hosting team removes those environment overrides.</p>}
                   <div className="mt-4 grid gap-4 sm:grid-cols-2">
                     <Label title="Bot user token" helper={data.slackCredentials.botTokenConfigured ? "Saved · enter a new xoxb token only to replace it" : "Required · starts with xoxb-"}>
                       <input type="password" autoComplete="new-password" value={botToken} onChange={(event)=>setBotToken(event.target.value.trim())} placeholder={data.slackCredentials.botTokenConfigured ? "•••••••••••••••• saved" : "xoxb-…"} className={field} />

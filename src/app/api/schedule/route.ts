@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/db/prisma";
 import { generateSchedule } from "@/features/scheduling/engine/generate-schedule";
+import { operationToday } from "@/lib/validation";
 
 type ShiftConfig = { id: string; name: string; startTime: string; endTime: string; order: number; staffingRules: { dayOfWeek: number; minimumStaff: number; minimumBilingual: number; isOverride: boolean }[] };
 type AccountConfig = { id: string; operatingWindows?: { dayOfWeek: number }[]; coverageRequirements: { dayOfWeek: number; startTime: string; endTime: string; minimumStaff: number; minimumBilingual: number }[] };
@@ -69,9 +70,9 @@ export async function GET(request: Request) {
     prisma.account.findMany({ where: { active: true }, include: { coverageRequirements: true, employeeCapabilities: true } }),
   ]);
   const operatingDays = new Set(accounts.flatMap((account) => account.coverageRequirements.map((item) => item.dayOfWeek)));
-  const warnings: { date: string; shiftId: string; severity: "critical"; code: string; message: string }[] = [];
-  for (const assignment of period.assignments.filter((item) => item.source === "archive-needs-replacement")) {
-    warnings.push({ date: assignment.date.toISOString().slice(0, 10), shiftId: `replacement:${assignment.employeeId}`, severity: "critical", code: "REPLACEMENT_REQUIRED", message: `${assignment.employee.name} was archived. Replace this future shift before approving the schedule.` });
+  const warnings: { date: string; shiftId: string; severity: "critical" | "warning"; code: string; message: string }[] = Array.isArray(period.warnings) ? (period.warnings as typeof warnings).filter(item => item.code === "REST_PATTERN_OVERRIDE") : [];
+  for (const assignment of period.assignments.filter((item) => ["archive-needs-replacement", "leave-needs-review"].includes(item.source))) {
+    warnings.push({ date: assignment.date.toISOString().slice(0, 10), shiftId: `replacement:${assignment.employeeId}`, severity: "critical", code: "REPLACEMENT_REQUIRED", message: `${assignment.employee.name}: ${assignment.source === "archive-needs-replacement" ? "archived profile; replace this future shift" : "leave removed; review this off day"} before approving the schedule.` });
   }
   const working = period.assignments.filter((assignment) => assignment.status === "WORKING" && assignment.shiftId);
   const dateKeys = [...new Set(period.assignments.map((assignment) => assignment.date.toISOString().slice(0, 10)))];
@@ -114,13 +115,16 @@ export async function POST(request: Request) {
   if (cutoverDate && (cutoverDate < monthStart || cutoverDate >= monthEnd)) {
     return NextResponse.json({ error: `Initial transition is set for ${cutoverDate.toISOString().slice(0, 10)}. Generate that month first, then the transition will complete.` }, { status: 409 });
   }
-  const scheduleStart = cutoverDate ?? monthStart;
+  const today = new Date(`${operationToday(settings.timezone)}T00:00:00Z`);
+  if (cutoverDate && cutoverDate < today) return NextResponse.json({ error: "Choose today or a future cutover date and update the handover history before starting the transition." }, { status: 409 });
+  const scheduleStart = cutoverDate && cutoverDate > today ? cutoverDate : today > monthStart ? today : monthStart;
+  if (scheduleStart >= monthEnd) return NextResponse.json({ error: "Past months are preserved and cannot be regenerated." }, { status: 409 });
   const targets = effectiveStaffing(shifts, accounts, employees.length, settings.maxWeeklyDays);
   const operatingDays = targets.operatingDays;
   if (!operatingDays.length) return NextResponse.json({ error: "Add operating hours for at least one active account before generating a schedule." }, { status: 409 });
   const historyStart = new Date(scheduleStart); historyStart.setUTCDate(historyStart.getUTCDate() - settings.historyWindowDays);
   const [priorAssignments, openingHistory] = await Promise.all([
-    prisma.shiftAssignment.findMany({ where: { date: { gte: historyStart, lt: scheduleStart }, employeeId: { in: employees.map((employee) => employee.id) }, schedulePeriod: { status: { in: ["APPROVED", "PUBLISHED"] } } }, select: { employeeId: true, date: true, status: true, shiftId: true } }),
+    prisma.shiftAssignment.findMany({ where: { date: { gte: historyStart, lt: scheduleStart }, employeeId: { in: employees.map((employee) => employee.id) } }, select: { employeeId: true, date: true, status: true, shiftId: true } }),
     prisma.openingHistory.findMany({ where: { date: { gte: historyStart, lt: scheduleStart }, employeeId: { in: employees.map((employee) => employee.id) } }, select: { employeeId: true, date: true, status: true, shiftId: true } }),
   ]);
   if (cutoverDate && openingHistory.length < employees.length * settings.historyWindowDays) {
@@ -133,12 +137,20 @@ export async function POST(request: Request) {
     historyByEmployee.set(entry.employeeId, employeeHistory);
   }
   const priorAssignmentsByEmployee = Object.fromEntries(employees.map((employee) => [employee.id, [...(historyByEmployee.get(employee.id)?.values() ?? [])]]));
-  const generated = generateSchedule({ year, month, startDate: scheduleStart.toISOString().slice(0, 10), variationSeed: Date.now(), maxConsecutiveDays: settings.maxConsecutiveDays, operatingDays, weekStartsOn: settings.weekStartsOn, maxWeeklyDays: settings.maxWeeklyDays, priorAssignments: priorAssignmentsByEmployee, employees: employees.map(e => ({ id: e.id, name: e.name, preferredShiftId: e.preferredShiftId, isBilingual: e.isBilingual, accountIds: e.accountCapabilities.map((item) => item.accountId), dayOffPreferences: e.dayOffPreferences.map(d => ({ dayOfWeek: d.dayOfWeek, rank: d.rank })), timeOff: e.timeOff.map(t => ({ date: t.date.toISOString().slice(0, 10), type: t.type })) })), shifts: shifts.map(s => ({ id: s.id, name: s.name, startTime: s.startTime, minimumByDay: Object.fromEntries(operatingDays.map(day => [day, targets.staff.get(`${s.id}:${day}`) ?? 0])), bilingualByDay: Object.fromEntries(operatingDays.map(day => [day, targets.bilingual.get(`${s.id}:${day}`) ?? 0])), requiredAccountIdsByDay: Object.fromEntries(operatingDays.map(day => [day, targets.requiredAccounts.get(`${s.id}:${day}`) ?? []])) })) });
+  // Fairness uses all recorded work before the generated range, independently
+  // of the shorter handover window used for work-limit continuity.
+  const [recordedFairness, openingFairness] = await Promise.all([
+    prisma.shiftAssignment.findMany({ where: { date: { lt: scheduleStart }, employeeId: { in: employees.map(e=>e.id) } }, select: { employeeId:true,date:true,status:true,shiftId:true } }),
+    prisma.openingHistory.findMany({ where: { date: { lt: scheduleStart }, employeeId: { in: employees.map(e=>e.id) } }, select: { employeeId:true,date:true,status:true,shiftId:true } }),
+  ]);
+  const fairnessHistory = Object.fromEntries(employees.map(employee=>[employee.id,[...new Map([...openingFairness,...recordedFairness].filter(entry=>entry.employeeId === employee.id).map(entry=>[entry.date.toISOString().slice(0,10),{date:entry.date.toISOString().slice(0,10),status:entry.status,shiftId:entry.shiftId}])).values()]]));
+  const generated = generateSchedule({ year, month, fairnessHistory, startDate: scheduleStart.toISOString().slice(0, 10), variationSeed: Date.now(), maxConsecutiveDays: settings.maxConsecutiveDays, operatingDays, weekStartsOn: settings.weekStartsOn, maxWeeklyDays: settings.maxWeeklyDays, priorAssignments: priorAssignmentsByEmployee, employees: employees.map(e => ({ id: e.id, name: e.name, preferredShiftId: e.preferredShiftId, isBilingual: e.isBilingual, accountIds: e.accountCapabilities.map((item) => item.accountId), dayOffPreferences: e.dayOffPreferences.map(d => ({ dayOfWeek: d.dayOfWeek, rank: d.rank })), timeOff: e.timeOff.map(t => ({ date: t.date.toISOString().slice(0, 10), type: t.type })) })), shifts: shifts.map(s => ({ id: s.id, name: s.name, startTime: s.startTime, minimumByDay: Object.fromEntries(operatingDays.map(day => [day, targets.staff.get(`${s.id}:${day}`) ?? 0])), bilingualByDay: Object.fromEntries(operatingDays.map(day => [day, targets.bilingual.get(`${s.id}:${day}`) ?? 0])), requiredAccountIdsByDay: Object.fromEntries(operatingDays.map(day => [day, targets.requiredAccounts.get(`${s.id}:${day}`) ?? []])) })) });
   const period = await prisma.$transaction(async tx => {
-    const saved = await tx.schedulePeriod.upsert({ where: { year_month: { year, month } }, create: { year, month, generatedAt: new Date() }, update: { status: "DRAFT", generatedAt: new Date() } });
-    await tx.taskAssignment.deleteMany({ where: { date: { gte: monthStart, lt: monthEnd } } });
-    await tx.breakSchedule.deleteMany({ where: { date: { gte: monthStart, lt: monthEnd } } });
-    await tx.shiftAssignment.deleteMany({ where: { schedulePeriodId: saved.id } });
+    const saved = await tx.schedulePeriod.upsert({ where: { year_month: { year, month } }, create: { year, month, generatedAt: new Date(), warnings: generated.warnings }, update: { status: "DRAFT", generatedAt: new Date(), warnings: generated.warnings } });
+    await tx.taskAssignment.deleteMany({ where: { date: { gte: scheduleStart, lt: monthEnd } } });
+    await tx.breakSchedule.deleteMany({ where: { date: { gte: scheduleStart, lt: monthEnd } } });
+    await tx.dailyPlan.updateMany({ where: { date: { gte: scheduleStart, lt: monthEnd } }, data: { configHash: "", revision: { increment: 1 } } });
+    await tx.shiftAssignment.deleteMany({ where: { schedulePeriodId: saved.id, date: { gte: scheduleStart } } });
     await tx.shiftAssignment.createMany({ data: generated.assignments.map(a => {
       const shift = shifts.find((item) => item.id === a.shiftId);
       const weekday = new Date(`${a.date}T00:00:00.000Z`).getUTCDay();
@@ -180,6 +192,7 @@ export async function PATCH(request: Request) {
         const capable=new Set(account.employeeCapabilities.map((item)=>item.employeeId));
         const qualifying=current.assignments.filter((assignment)=>assignment.date.toISOString().slice(0,10)===date&&assignment.status==="WORKING"&&assignment.shift&&assignment.shift.startTime<=requirement.startTime&&assignment.shift.endTime>=requirement.endTime&&capable.has(assignment.employeeId));
         if(qualifying.length<requirement.minimumStaff)shortages.push(`${date}: ${account.name} ${requirement.startTime}–${requirement.endTime} is short by ${requirement.minimumStaff-qualifying.length}.`);
+        if(qualifying.filter(item=>item.employee.isBilingual).length<requirement.minimumBilingual)shortages.push(`${date}: ${account.name} ${requirement.startTime}–${requirement.endTime} lacks required language coverage.`);
       }
     }
     if (shortages.length) return NextResponse.json({ error: "Coverage requirements are not met.", code: "COVERAGE_BLOCKED", shortages }, { status: 409 });
@@ -191,7 +204,7 @@ export async function PATCH(request: Request) {
     await prisma.appSettings.update({ where: { id: "global" }, data: { projectStartDate: null } });
   }
   if (!approvalSettings.autoPrepareDailyPlans) return NextResponse.json({ ...period, planning: { created: 0, existing: 0, failed: 0, skipped: true } });
-  const dates = [...new Set(current.assignments.filter((assignment) => assignment.status === "WORKING").map((assignment) => assignment.date.toISOString().slice(0, 10)))].sort();
+  const dates = [...new Set(current.assignments.filter((assignment) => assignment.status === "WORKING" && assignment.date.toISOString().slice(0, 10) >= operationToday(approvalSettings.timezone)).map((assignment) => assignment.date.toISOString().slice(0, 10)))].sort();
   const planning = { created: 0, existing: 0, failed: 0 };
   for (const date of dates) {
     try {

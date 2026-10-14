@@ -29,20 +29,38 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
   const router = useRouter();
   const [identity, setIdentity] = useState({ organizationName: "Tradeling", workspaceName: "Customer Service Operations" });
+  const [posting, setPosting] = useState(false);
+  const [setupReady, setSetupReady] = useState<boolean | null>(null);
+  const [preview, setPreview] = useState<{ blocks: { type: string; text?: { text: string } }[]; mentions: Record<string,string> } | null>(null);
+  async function previewToday() {
+    try {
+      const response = await fetch("/api/slack/post", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ preview: true }) });
+      const body = await response.json();
+      if (response.ok) setPreview(body); else showAppNotification({ kind: "error", message: body.error || "Preview could not be prepared." });
+    } catch { showAppNotification({ kind: "error", message: "Preview could not be loaded. Check your connection." }); }
+  }
 
   useEffect(() => {
     const loadIdentity = () => fetch("/api/settings")
-      .then((response) => response.ok ? response.json() : null)
+      .then((response) => {
+        if (response.status === 401) {
+          // A fresh navigation also clears any cached protected route content.
+          // eslint-disable-next-line @next/next/no-location-assign-relative-destination
+          window.location.assign("/login");
+        }
+        return response.ok ? response.json() : null;
+      })
       .then((data) => {
         if (data?.settings?.organizationName && data?.settings?.workspaceName) {
           setIdentity({ organizationName: data.settings.organizationName, workspaceName: data.settings.workspaceName });
         }
+        if (data?.readiness) setSetupReady(Boolean(data.readiness.ready));
       })
       .catch(() => undefined);
     void loadIdentity();
     window.addEventListener("cs-identity-updated", loadIdentity);
     return () => window.removeEventListener("cs-identity-updated", loadIdentity);
-  }, []);
+  }, [pathname]);
 
   async function signOut() {
     await fetch("/api/auth", { method: "DELETE" });
@@ -50,14 +68,23 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     router.refresh();
   }
 
-  async function postTodayToSlack() {
+  async function postTodayToSlack(resend = false) {
+    if (posting) return;
+    setPosting(true);
+    try {
     const response = await fetch("/api/slack/post", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       // The server determines "today" using the timezone configured in Settings.
-      body: JSON.stringify({}),
+      body: JSON.stringify({ resend }),
     });
     const result = await response.json();
+    if (result.code === "ALREADY_POSTED") {
+      setPosting(false);
+      const { requestAppConfirmation } = await import("@/components/ui/app-feedback");
+      if (await requestAppConfirmation({ title: "Resend today's briefing?", message: "The briefing has already been posted. Resending sends another channel post and personal briefings.", confirmLabel: "Resend briefing" })) await postTodayToSlack(true);
+      return;
+    }
     const directMessages = result.directMessages;
     const deliverySummary = directMessages
       ? ` ${directMessages.sent} personal briefing${directMessages.sent === 1 ? " was" : "s were"} delivered.${directMessages.failed || directMessages.skipped ? ` ${directMessages.failed + directMessages.skipped} could not be delivered; check those agents’ Slack member IDs and the bot’s im:write permission.` : ""}`
@@ -68,6 +95,8 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         ? `Today’s team briefing was posted to Slack.${deliverySummary}`
         : result.error || "Slack posting failed.",
     });
+    } catch { showAppNotification({ kind: "error", message: "Posting could not be confirmed. Check posting history before retrying." }); }
+    finally { setPosting(false); }
   }
 
   return (
@@ -112,6 +141,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       </aside>
 
       <AppFeedbackHost />
+      {preview && <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/50 p-5"><div role="dialog" aria-modal="true" aria-label="Briefing preview" className="max-h-[90vh] w-full max-w-3xl overflow-auto rounded-2xl bg-white p-6 shadow-2xl"><div className="mb-5 flex justify-between gap-3"><div><h2 className="text-xl font-bold">Today’s briefing preview</h2><p className="mt-1 text-sm text-slate-500">Review the saved plan. No Slack messages are sent by this preview.</p></div><button onClick={()=>setPreview(null)} className="rounded-lg border px-3 py-2 text-sm font-bold">Close</button></div>{preview.blocks.map((block,index)=>block.type === "divider" ? <hr key={index} className="my-5"/> : block.text ? <p key={index} className={`my-3 whitespace-pre-wrap text-sm leading-6 ${block.type === "header" ? "text-lg font-bold" : ""}`}>{block.text.text.replace(/<@([^>]+)>/g,(_,id)=>`@${preview.mentions[id] || id}`).replace(/[*_]/g,"")}</p> : null)}</div></div>}
       <div className="lg:pl-72">
         <header className="sticky top-0 z-20 flex h-18 items-center justify-between border-b border-slate-200/80 bg-white/90 px-5 backdrop-blur-xl md:px-8">
           <div>
@@ -123,18 +153,20 @@ export function AppShell({ children }: { children: React.ReactNode }) {
             </p>
           </div>
           <div className="flex items-center gap-3">
+            {pathname === "/tasks" && <button onClick={()=>void previewToday()} className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs font-bold">Preview briefing</button>}
             {pathname === "/tasks" && (
               <button
-                onClick={postTodayToSlack}
+                onClick={() => void postTodayToSlack()}
+                disabled={posting}
                 className="flex items-center gap-2 rounded-xl bg-orange-500 px-4 py-2 text-xs font-bold text-white"
               >
                 <Send className="h-3.5 w-3.5" /> Post today to Slack
               </button>
             )}
             <div className="flex items-center gap-3 rounded-full border border-slate-200 bg-slate-50 px-3 py-2">
-              <span className="h-2 w-2 rounded-full bg-emerald-500" />
+              <span className={`h-2 w-2 rounded-full ${setupReady ? "bg-emerald-500" : "bg-amber-500"}`} />
               <span className="text-xs font-semibold text-slate-600">
-                System ready
+                {setupReady === null ? "Checking setup" : setupReady ? "Setup ready" : "Setup needs review"}
               </span>
             </div>
           </div>

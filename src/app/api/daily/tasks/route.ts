@@ -1,6 +1,42 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
 import { prisma } from "@/lib/db/prisma";
-const schema=z.object({date:z.string().regex(/^\d{4}-\d{2}-\d{2}$/),employeeId:z.string(),categoryId:z.string(),note:z.string().max(500).nullable().optional(),priority:z.number().int().min(1).max(2).default(1),startTime:z.string().regex(/^\d{2}:\d{2}$/).nullable().optional(),endTime:z.string().regex(/^\d{2}:\d{2}$/).nullable().optional()});
-export async function POST(request:Request){const parsed=schema.safeParse(await request.json());if(!parsed.success)return NextResponse.json({error:"Check the task details."},{status:400});if((parsed.data.startTime&&!parsed.data.endTime)||(!parsed.data.startTime&&parsed.data.endTime)||((parsed.data.startTime??"")>=(parsed.data.endTime??"")))return NextResponse.json({error:"Provide a valid task start and end time."},{status:400});const date=new Date(`${parsed.data.date}T00:00:00.000Z`);const weekday=date.getUTCDay();const [working,category]=await Promise.all([prisma.shiftAssignment.findFirst({where:{date,employeeId:parsed.data.employeeId,status:"WORKING",schedulePeriod:{status:{in:["APPROVED","PUBLISHED"]}}},include:{shift:true,employee:{include:{accountCapabilities:true}}}}),prisma.taskCategory.findFirst({where:{id:parsed.data.categoryId,active:true},include:{account:{include:{operatingWindows:true}}}})]);if(!working?.shift)return NextResponse.json({error:"This employee is not scheduled to work on this date."},{status:409});if(!category)return NextResponse.json({error:"Choose an active task."},{status:409});if(category.account){const capable=working.employee.accountCapabilities.some((item)=>item.accountId===category.accountId);const operating=category.account.active&&category.account.operatingWindows.some((window)=>window.dayOfWeek===weekday&&working.shift!.startTime<window.endTime&&working.shift!.endTime>window.startTime);if(!capable||!operating)return NextResponse.json({error:`${category.name} is not available for this employee's scheduled account coverage.`},{status:409});}const {employeeId,categoryId,note,priority,startTime,endTime}=parsed.data;const values={note:note||null,priority,startTime:startTime||null,endTime:endTime||null};const task=await prisma.taskAssignment.upsert({where:{date_employeeId_categoryId:{date,employeeId,categoryId}},create:{date,employeeId,categoryId,...values},update:values});return NextResponse.json(task)}
-export async function DELETE(request:Request){const parsed=schema.pick({date:true,employeeId:true,categoryId:true}).safeParse(await request.json());if(!parsed.success)return NextResponse.json({error:"Invalid task."},{status:400});await prisma.taskAssignment.deleteMany({where:{...parsed.data,date:new Date(`${parsed.data.date}T00:00:00.000Z`)}});return NextResponse.json({ok:true})}
+import { clock, dateKey, operationToday } from "@/lib/validation";
+import { changedPlan } from "@/lib/daily-plan";
+const schema = z.object({ date: dateKey, employeeId: z.string(), categoryId: z.string(), note: z.string().max(500).nullable().optional(), priority: z.number().int().min(1).max(2).optional(), startTime: clock.nullable().optional(), endTime: clock.nullable().optional() });
+export async function POST(request: Request) {
+  const parsed = schema.safeParse(await request.json().catch(() => null));
+  if (!parsed.success) return NextResponse.json({ error: "Check the task details." }, { status: 400 });
+  const input = parsed.data;
+  const date = new Date(`${input.date}T00:00:00Z`);
+  const settings = await prisma.appSettings.findUnique({ where: { id: "global" } });
+  if (input.date < operationToday(settings?.timezone || "UTC")) return NextResponse.json({ error: "Past task history is preserved. Choose today or a future date." }, { status: 409 });
+  const [working, category, existing] = await Promise.all([
+    prisma.shiftAssignment.findFirst({ where: { date, employeeId: input.employeeId, status: "WORKING", employee: { status: "ACTIVE" }, schedulePeriod: { status: { in: ["APPROVED", "PUBLISHED"] } } }, include: { shift: true, employee: { include: { accountCapabilities: true } } } }),
+    prisma.taskCategory.findFirst({ where: { id: input.categoryId, active: true }, include: { account: { include: { operatingWindows: true } } } }),
+    prisma.taskAssignment.findUnique({ where: { date_employeeId_categoryId: { date, employeeId: input.employeeId, categoryId: input.categoryId } } }),
+  ]);
+  if (!working?.shift || !category) return NextResponse.json({ error: "Choose an active task for an employee working that day." }, { status: 409 });
+  const shift = working.shift;
+  if (category.account && (!category.account.active || !working.employee.accountCapabilities.some(c => c.accountId === category.accountId))) return NextResponse.json({ error: "This employee is not eligible for this account." }, { status: 409 });
+  const windows = category.account ? category.account.operatingWindows.filter(w => w.dayOfWeek === date.getUTCDay() && w.startTime < shift.endTime && w.endTime > shift.startTime).map(w => ({ start: w.startTime > shift.startTime ? w.startTime : shift.startTime, end: w.endTime < shift.endTime ? w.endTime : shift.endTime })) : [{ start: shift.startTime, end: shift.endTime }];
+  if (!windows.length) return NextResponse.json({ error: "This account is closed during the selected shift." }, { status: 409 });
+  const explicit = Boolean(input.startTime || input.endTime);
+  if (explicit && (!input.startTime || !input.endTime)) return NextResponse.json({ error: "Provide both task times." }, { status: 400 });
+  const startTime = explicit ? input.startTime! : existing?.startTime ?? windows[0].start;
+  const endTime = explicit ? input.endTime! : existing?.endTime ?? windows[0].end;
+  if (startTime >= endTime || !windows.some(w => startTime >= w.start && endTime <= w.end)) return NextResponse.json({ error: "Task times must be inside the employee's shift and this account's service hours." }, { status: 400 });
+  const values = { startTime, endTime, note: input.note === undefined ? existing?.note ?? null : input.note || null, priority: input.priority ?? existing?.priority ?? category.defaultPriority };
+  const result = await prisma.taskAssignment.upsert({ where: { date_employeeId_categoryId: { date, employeeId: input.employeeId, categoryId: input.categoryId } }, create: { date, employeeId: input.employeeId, categoryId: input.categoryId, ...values }, update: values });
+  await changedPlan(date);
+  return NextResponse.json(result);
+}
+export async function DELETE(request: Request) {
+  const parsed = schema.pick({ date: true, employeeId: true, categoryId: true }).safeParse(await request.json().catch(() => null));
+  if (!parsed.success) return NextResponse.json({ error: "Invalid task." }, { status: 400 });
+  const settings = await prisma.appSettings.findUnique({ where: { id: "global" } });
+  if (parsed.data.date < operationToday(settings?.timezone || "UTC")) return NextResponse.json({ error: "Past task history is preserved." }, { status: 409 });
+  await prisma.taskAssignment.deleteMany({ where: { ...parsed.data, date: new Date(`${parsed.data.date}T00:00:00Z`) } });
+  await changedPlan(new Date(`${parsed.data.date}T00:00:00Z`));
+  return NextResponse.json({ ok: true });
+}

@@ -25,5 +25,5 @@ export async function PUT(request: Request) {
 
 export async function DELETE() {
   await prisma.appSettings.upsert({ where: { id: "global" }, create: { id: "global" }, update: { slackBotTokenEncrypted: null, slackAppTokenEncrypted: null } });
-  return NextResponse.json({ ok: true });
+  return NextResponse.json({ ok: true, restartRequired: true });
 }

@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
 import { prisma } from "@/lib/db/prisma";
+import { dateKey } from "@/lib/validation";
 
 const statuses = ["WORKING", "OFF", "ANNUAL_LEAVE", "EMERGENCY_LEAVE", "COMP_OFF", "PUBLIC_HOLIDAY", "SICK", "UNPAID_LEAVE", "OTHER_LEAVE"] as const;
 const input = z.object({
@@ -8,7 +9,7 @@ const input = z.object({
   month: z.number().int().min(1).max(12),
   entries: z.array(z.object({
     employeeId: z.string(),
-    date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+    date: dateKey,
     status: z.enum(statuses),
     shiftId: z.string().nullable(),
     workLocation: z.enum(["OFFICE", "WFH"]).default("OFFICE"),

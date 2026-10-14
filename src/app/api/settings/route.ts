@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
 import { prisma } from "@/lib/db/prisma";
+import { clock, timezone as validTimezone } from "@/lib/validation";
 
 export async function GET() {
   const [settings, shifts, employees, employeesWithSlack, employeesWithAccounts, accounts, operatingWindows, coverageRequirements, tasks, staffingRules, approvedSchedules, postingHistory] = await Promise.all([
@@ -29,6 +30,7 @@ export async function GET() {
         error: true,
         postedAt: true,
         createdAt: true,
+        deliveries: { select: { status: true, error: true } },
       },
     }),
   ]);
@@ -41,7 +43,7 @@ export async function GET() {
     settings: safeSettings,
     shifts,
     slackConfigured,
-    slackCredentials: { botTokenConfigured, appTokenConfigured },
+    slackCredentials: { botTokenConfigured, appTokenConfigured, botTokenFromHost: Boolean(process.env.SLACK_BOT_TOKEN), appTokenFromHost: Boolean(process.env.SLACK_APP_TOKEN) },
     postingHistory,
     readiness: {
       employees,
@@ -60,7 +62,7 @@ export async function GET() {
   });
 }
 
-const schema = z.object({ organizationName: z.string().trim().min(2).max(80), workspaceName: z.string().trim().min(2).max(100), primaryLanguageLabel: z.string().trim().min(2).max(40), timezone: z.string().min(1), postTime: z.string().regex(/^\d{2}:\d{2}$/), slackChannelId: z.string().trim(), slackMessageHeader: z.string().trim().min(1).max(150), automationEnabled: z.boolean(), maxConsecutiveDays: z.number().int().min(1).max(7), maxWeeklyDays:z.number().int().min(1).max(7), historyWindowDays:z.number().int().min(3).max(14), scheduleBuildCutoff:z.number().int().min(1).max(28), wfhDays:z.array(z.number().int().min(0).max(6)), lateShiftWfh:z.boolean(), autoPrepareDailyPlans:z.boolean(), weekStartsOn: z.number().int().min(0).max(6), mainBreakMinutes:z.number().int().min(0).max(120),shortBreakMinutes:z.number().int().min(0).max(60),breakGapMinutes:z.number().int().min(0).max(60),maxConcurrentMainBreaks:z.number().int().min(1).max(10),mainBreakAfterMinutes:z.number().int().min(0).max(600),shortBreakDelayMinutes:z.number().int().min(0).max(600), requireAcknowledgement: z.boolean(), includeBreaksInSlack: z.boolean(), includeNotesInSlack: z.boolean() });
+const schema = z.object({ organizationName: z.string().trim().min(2).max(80), workspaceName: z.string().trim().min(2).max(100), primaryLanguageLabel: z.string().trim().min(2).max(40), timezone: validTimezone, postTime: clock, slackChannelId: z.string().trim(), slackMessageHeader: z.string().trim().min(1).max(150), automationEnabled: z.boolean(), maxConsecutiveDays: z.number().int().min(1).max(7), maxWeeklyDays:z.number().int().min(1).max(7), historyWindowDays:z.number().int().min(3).max(14), scheduleBuildCutoff:z.number().int().min(1).max(28), wfhDays:z.array(z.number().int().min(0).max(6)), lateShiftWfh:z.boolean(), autoPrepareDailyPlans:z.boolean(), weekStartsOn: z.number().int().min(0).max(6), mainBreakMinutes:z.number().int().min(0).max(120),shortBreakMinutes:z.number().int().min(0).max(60),breakGapMinutes:z.number().int().min(0).max(60),maxConcurrentMainBreaks:z.number().int().min(1).max(10),mainBreakAfterMinutes:z.number().int().min(0).max(600),shortBreakDelayMinutes:z.number().int().min(0).max(600), requireAcknowledgement: z.boolean(), includeBreaksInSlack: z.boolean(), includeNotesInSlack: z.boolean() });
 export async function PATCH(request: Request) {
   const parsed = schema.safeParse(await request.json());
   if (!parsed.success) return NextResponse.json({ error: "Please check the settings." }, { status: 400 });

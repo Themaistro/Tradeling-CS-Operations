@@ -2,6 +2,12 @@ import { PrismaClient } from "@prisma/client";
 const prisma = new PrismaClient();
 
 async function main() {
+  // Defaults are only for a fresh installation. Normal restarts must preserve
+  // the operation the user configured, including removed hours and eligibility.
+  if (await prisma.account.count() || await prisma.shift.count()) {
+    await prisma.appSettings.upsert({ where: { id: "global" }, update: {}, create: { id: "global" } });
+    return;
+  }
   const existingShiftCount = await prisma.shift.count();
   const shifts = [{ name: "Day", legacyName: "Morning", startTime: "09:00", endTime: "18:00", color: "orange", order: 1 }, { name: "Night", legacyName: "Evening", startTime: "13:00", endTime: "22:00", color: "blue", order: 2 }];
   for (const shift of shifts) {

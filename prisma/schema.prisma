@@ -142,6 +142,7 @@ model SchedulePeriod {
   status      ScheduleStatus    @default(DRAFT)
   generatedAt DateTime?
   approvedAt  DateTime?
+  warnings    Json              @default("[]")
   assignments ShiftAssignment[]
   createdAt   DateTime          @default(now())
   updatedAt   DateTime          @updatedAt
@@ -288,6 +289,8 @@ model BreakSchedule {
   startTime  String
   endTime    String
   type       BreakType @default(MAIN)
+  coverEmployeeId String?
+  durationException Boolean @default(false)
 
   @@unique([date, employeeId, type])
   @@index([date])
@@ -301,8 +304,27 @@ model Acknowledgement {
   scheduleDate   DateTime @db.Date
   slackMessageTs String?
   acknowledgedAt DateTime @default(now())
+  planRevision   Int      @default(1)
 
-  @@unique([employeeId, taskCategoryId, scheduleDate])
+  @@unique([employeeId, taskCategoryId, scheduleDate, planRevision])
+}
+
+model DailyPlan {
+  date       DateTime @id @db.Date
+  revision   Int      @default(1)
+  configHash String
+  updatedAt  DateTime @updatedAt
+}
+
+model SlackDirectDelivery {
+  id         String   @id @default(cuid())
+  postId     String
+  post       SlackPostLog @relation(fields: [postId], references: [id], onDelete: Cascade)
+  employeeId String
+  status     String
+  error      String?
+  updatedAt  DateTime @updatedAt
+  @@unique([postId, employeeId])
 }
 
 model SlackPostLog {
@@ -311,6 +333,9 @@ model SlackPostLog {
   channelId    String
   messageTs    String?
   source       String          @default("MANUAL")
+  deliveryKey  String?         @unique
+  planRevision Int             @default(1)
+  deliveries   SlackDirectDelivery[]
   postTime     String?
   timezone     String?
   status       SlackPostStatus @default(PENDING)

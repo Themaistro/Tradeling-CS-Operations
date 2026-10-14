@@ -97,7 +97,7 @@ export async function GET(request: Request) {
       const employeeBreaks = breaks.filter((item) => item.employeeId === employee.id && dateKey(item.date) === key);
       const cell = row.getCell(dateIndex + 2);
       if (!assignment || assignment.status !== "WORKING") {
-        cell.value = statusLabels[assignment?.status ?? "OFF"] ?? assignment?.status ?? "OFF";
+        cell.value = assignment ? statusLabels[assignment.status] ?? assignment.status : "—";
         cell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: assignment?.status && assignment.status !== "OFF" ? "FFE4D9F2" : "FFF8CB9C" } };
       } else {
         const location = assignment.workLocation === "WFH" ? "WFH " : "";

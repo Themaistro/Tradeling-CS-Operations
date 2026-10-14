@@ -1,6 +1,7 @@
 const SESSION_MAX_AGE = 60 * 60 * 24 * 7;
 
 function secret() {
+  if (process.env.NODE_ENV === "production" && (!process.env.SESSION_SECRET || process.env.SESSION_SECRET.length < 32 || process.env.SESSION_SECRET === "replace-this-before-deployment")) throw new Error("Configure a strong SESSION_SECRET before starting production.");
   return process.env.SESSION_SECRET || process.env.ADMIN_PASSWORD || "local-development-only";
 }
 
@@ -16,7 +17,7 @@ async function key() {
     new TextEncoder().encode(secret()),
     { name: "HMAC", hash: "SHA-256" },
     false,
-    ["sign"],
+    ["sign", "verify"],
   );
 }
 
@@ -31,11 +32,13 @@ export async function verifySessionToken(token?: string) {
   if (!token) return false;
   const [label, expires, signature, ...extra] = token.split(".");
   if (extra.length || label !== "authenticated" || !expires || !signature) return false;
-  if (Number(expires) <= Math.floor(Date.now() / 1000)) return false;
+  if (!Number.isSafeInteger(Number(expires)) || Number(expires) <= Math.floor(Date.now() / 1000)) return false;
 
   const payload = `${label}.${expires}`;
-  const expected = await crypto.subtle.sign("HMAC", await key(), new TextEncoder().encode(payload));
-  return base64Url(new Uint8Array(expected)) === signature;
+  try {
+    const bytes = Uint8Array.from(atob(signature.replace(/-/g, "+").replace(/_/g, "/")), value => value.charCodeAt(0));
+    return await crypto.subtle.verify("HMAC", await key(), bytes, new TextEncoder().encode(payload));
+  } catch { return false; }
 }
 
 export { SESSION_MAX_AGE };
