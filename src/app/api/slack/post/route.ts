@@ -80,21 +80,28 @@ export async function POST(request: Request) {
   const formatTask = (group: (typeof tasks)[number][]) => {
     const task = group[0];
     const people = group
-      .map((item) => `${mention(item.employeeId)} · P${item.priority}`)
+      .map((item) => mention(item.employeeId))
       .join("  •  ");
     const period = task.startTime && task.endTime
       ? ` · ${formatTime(task.startTime)}–${formatTime(task.endTime)}`
       : "";
     const note = settings.includeNotesInSlack ? cleanTaskNote(task.note) : "";
-    return `${taskEmoji(task.category.name, task.category.icon)} *${task.category.name}*${period}\n${people}${note ? `\n_${note}_` : ""}`;
+    return `${taskEmoji(task.category.name, task.category.icon === "📌" ? null : task.category.icon)} *${task.category.name}:* ${people}${period}${note ? `\n_${note}_` : ""}`;
   };
   const groupedTasks = [...taskGroups.values()];
+  // The later call-coverage window comes from the generated account plan.
+  // Do not infer a fixed handover time from a shift name or account name.
+  const callStarts = [...new Set(tasks.filter((task) => /call/i.test(task.category.name) && task.startTime).map((task) => task.startTime!))].sort();
+  const eveningStart = callStarts.length > 1 ? callStarts.at(-1) : undefined;
+  const isEvening = (group: (typeof tasks)[number][]) => Boolean(eveningStart && group[0].startTime === eveningStart);
   const primaryTaskLines = groupedTasks
-    .filter((group) => group[0].category.mode === "FOCUS")
+    .filter((group) => !isEvening(group) && group[0].category.mode === "FOCUS" && !/call/i.test(group[0].category.name))
     .map(formatTask);
   const supportingTaskLines = groupedTasks
-    .filter((group) => group[0].category.mode !== "FOCUS")
+    .filter((group) => !isEvening(group) && group[0].category.mode !== "FOCUS" && !/call/i.test(group[0].category.name))
     .map(formatTask);
+  const callLines = groupedTasks.filter((group) => /call/i.test(group[0].category.name)).map(formatTask);
+  const eveningLines = groupedTasks.filter((group) => isEvening(group) && !/call/i.test(group[0].category.name)).map(formatTask);
   const shiftGroups = Map.groupBy(assignments, (assignment) => assignment.shiftId ?? "unassigned");
   const shiftLines = [...shiftGroups.values()]
     .sort((left, right) => (left[0].shift?.order ?? 999) - (right[0].shift?.order ?? 999))
@@ -115,12 +122,12 @@ export async function POST(request: Request) {
     const start = employeeTasks.map((task) => task.startTime).filter((value): value is string => Boolean(value)).sort()[0];
     const end = employeeTasks.map((task) => task.endTime).filter((value): value is string => Boolean(value)).sort().at(-1);
     const detail = (cleanTaskNote(employeeTasks[0]?.note ?? "") ?? "").replace(/ · (shared coverage|primary focus during shared coverage)$/i, "");
-    return `• ${mention(employeeId)} · *${formatTime(start ?? "13:00")}–${formatTime(end ?? "18:00")}* · ${detail}\n  Provides shared account coverage before their later shift assignments.`;
+    return `• ${mention(employeeId)} · *${formatTime(start)}–${formatTime(end)}* · ${detail}\n  Supports daytime responsibilities before taking over evening coverage.`;
   });
   const breakGroups = Map.groupBy(breaks.sort((left, right) => left.startTime.localeCompare(right.startTime)), (item) => `${item.type}|${item.startTime}|${item.endTime}`);
   const breakLines = [...breakGroups.values()].map((group) => {
     const label = group[0].type === "MAIN" ? "Main break" : "Short break";
-    return `• *${formatTime(group[0].startTime)}–${formatTime(group[0].endTime)}* · ${label}\n  ${group.map((item) => mention(item.employeeId)).join("  •  ")}`;
+    return `• *${formatTime(group[0].startTime)}–${formatTime(group[0].endTime)}:* ${group.map((item) => mention(item.employeeId)).join("  •  ")} · ${label}`;
   });
   try {
     const result = await client.chat.postMessage({
@@ -139,18 +146,20 @@ export async function POST(request: Request) {
           },
         },
         { type: "divider" },
-        { type: "section", text: { type: "mrkdwn", text: `*Today’s coverage*\n\n${shiftLines.join("\n\n")}` } },
+        { type: "section", text: { type: "mrkdwn", text: `*Team on duty*\n\n${shiftLines.join("\n\n")}` } },
+        ...(callLines.length ? [{ type: "section" as const, text: { type: "mrkdwn" as const, text: `*☎️ Calls · Live coverage*\nOn-duty agents handle calls alongside their assigned responsibilities, except during scheduled breaks.\n\n${callLines.join("\n\n")}` } }] : []),
         ...(sharedCoverageLines.length
-          ? [{ type: "divider" as const }, { type: "section" as const, text: { type: "mrkdwn" as const, text: `*Shared coverage period*\n${sharedCoverageLines.join("\n")}` } }]
+          ? [{ type: "divider" as const }, { type: "section" as const, text: { type: "mrkdwn" as const, text: `*Daytime support and evening handover*\n${sharedCoverageLines.join("\n")}` } }]
           : []),
         { type: "divider" },
         ...(primaryTaskLines.length
-          ? [{ type: "section" as const, text: { type: "mrkdwn" as const, text: `*Primary assignments*\n_Focused ownership for today_\n\n${primaryTaskLines.join("\n\n")}` } }]
+          ? [{ type: "section" as const, text: { type: "mrkdwn" as const, text: `*Assigned responsibilities*\n_Account coverage and times are shown with each task._\n\n${primaryTaskLines.join("\n\n")}` } }]
           : []),
         ...(supportingTaskLines.length
-          ? [{ type: "section" as const, text: { type: "mrkdwn" as const, text: `*Shared and supporting work*\n\n${supportingTaskLines.join("\n\n")}` } }]
+          ? [{ type: "section" as const, text: { type: "mrkdwn" as const, text: `*Supporting responsibilities*\n\n${supportingTaskLines.join("\n\n")}` } }]
           : []),
-        ...(settings.includeBreaksInSlack && breakLines.length ? [{ type: "divider" as const }, { type: "section" as const, text: { type: "mrkdwn" as const, text: `*Break plan*\n${breakLines.join("\n")}` } }] : []),
+        ...(eveningLines.length ? [{ type: "divider" as const }, { type: "section" as const, text: { type: "mrkdwn" as const, text: `*🌙 Evening responsibilities · from ${formatTime(eveningStart)}*\nEvening agents take over the account responsibilities below, alongside calls.\n\n${eveningLines.join("\n\n")}` } }] : []),
+        ...(settings.includeBreaksInSlack && breakLines.length ? [{ type: "divider" as const }, { type: "section" as const, text: { type: "mrkdwn" as const, text: `*☕ Break plan*\n${breakLines.join("\n")}` } }] : []),
         ...(settings.requireAcknowledgement
           ? [
               {
@@ -200,7 +209,7 @@ export async function POST(request: Request) {
                   ? ` · ${formatTime(task.startTime)}–${formatTime(task.endTime)}`
                   : "";
                 const note = settings.includeNotesInSlack ? cleanTaskNote(task.note) : "";
-                return `• ${taskEmoji(task.category.name, task.category.icon)} *${task.category.name}* · P${task.priority}${period}${note ? `\n  _${note}_` : ""}`;
+                return `• ${taskEmoji(task.category.name, task.category.icon === "📌" ? null : task.category.icon)} *${task.category.name}* · P${task.priority}${period}${note ? `\n  _${note}_` : ""}`;
               })
               .join("\n")
           : "No tasks are assigned to you today.";

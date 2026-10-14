@@ -6,10 +6,10 @@ const rules: IconRule[] = [
   { match: /call/i, icon: Phone, tone: "bg-emerald-50 text-emerald-700", emoji: "☎️" },
   { match: /slack|group|channel|support/i, icon: MessagesSquare, tone: "bg-violet-50 text-violet-700", emoji: "💬" },
   { match: /chat/i, icon: MessageCircle, tone: "bg-blue-50 text-blue-700", emoji: "💬" },
-  { match: /open email/i, icon: MailOpen, tone: "bg-cyan-50 text-cyan-700", emoji: "📨" },
+  { match: /open email/i, icon: MailOpen, tone: "bg-cyan-50 text-cyan-700", emoji: "📩" },
+  { match: /internal|ticket/i, icon: TicketCheck, tone: "bg-indigo-50 text-indigo-700", emoji: "📨" },
   { match: /stakeholder|email/i, icon: Mail, tone: "bg-sky-50 text-sky-700", emoji: "✉️" },
   { match: /return|escalation/i, icon: RotateCcw, tone: "bg-orange-50 text-orange-700", emoji: "↩️" },
-  { match: /internal|ticket/i, icon: TicketCheck, tone: "bg-indigo-50 text-indigo-700", emoji: "🎫" },
   { match: /verification/i, icon: BadgeCheck, tone: "bg-teal-50 text-teal-700", emoji: "✅" },
   { match: /review/i, icon: Star, tone: "bg-amber-50 text-amber-700", emoji: "⭐" },
 ];
