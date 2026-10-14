@@ -86,7 +86,7 @@ export async function POST(request: Request) {
       ? ` · ${formatTime(task.startTime)}–${formatTime(task.endTime)}`
       : "";
     const note = settings.includeNotesInSlack ? cleanTaskNote(task.note) : "";
-    return `${taskEmoji(task.category.name, task.category.icon === "📌" ? null : task.category.icon)} *${task.category.name}:* ${people}${period}${note ? `\n_${note}_` : ""}`;
+    return `${taskEmoji(task.category.name, task.category.icon)} *${task.category.name}:* ${people}${period}${note ? `\n_${note}_` : ""}`;
   };
   const groupedTasks = [...taskGroups.values()];
   // Use responsibility windows, since everyone tasks can span the full shift.
@@ -208,7 +208,7 @@ export async function POST(request: Request) {
                   ? ` · ${formatTime(task.startTime)}–${formatTime(task.endTime)}`
                   : "";
                 const note = settings.includeNotesInSlack ? cleanTaskNote(task.note) : "";
-                return `• ${taskEmoji(task.category.name, task.category.icon === "📌" ? null : task.category.icon)} *${task.category.name}* · P${task.priority}${period}${note ? `\n  _${note}_` : ""}`;
+                return `• ${taskEmoji(task.category.name, task.category.icon)} *${task.category.name}* · P${task.priority}${period}${note ? `\n  _${note}_` : ""}`;
               })
               .join("\n")
           : "No tasks are assigned to you today.";

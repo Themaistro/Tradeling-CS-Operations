@@ -21,7 +21,7 @@ function ruleFor(name: string) {
 export function TaskIcon({ name, icon, className = "h-9 w-9" }: { name: string; icon?: string | null; className?: string }) {
   const rule = ruleFor(name);
   const Icon = rule.icon;
-  return <span aria-hidden="true" className={`inline-flex shrink-0 items-center justify-center rounded-lg ${rule.tone} ${className}`}>{icon && !rules.some((item) => item.match.test(name)) ? <span className="text-base">{icon}</span> : <Icon className="h-4 w-4" />}</span>;
+  return <span aria-hidden="true" className={`inline-flex shrink-0 items-center justify-center rounded-lg ${rule.tone} ${className}`}>{icon ? <span className="text-base">{icon}</span> : <Icon className="h-4 w-4" />}</span>;
 }
 
 export function taskEmoji(name: string, icon?: string | null) {

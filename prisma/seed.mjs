@@ -34,7 +34,8 @@ async function main() {
     for (const [order, [name, groupName, isLive, mode, defaultPriority]] of tasks.entries()) {
       const rotationOrder = { "Chats": 1, "Returns & CX Escalations": 2, "Open Emails": 3, "Internal Emails & Tickets": 4 }[name] ?? 0;
       const existing = await prisma.taskCategory.findFirst({ where: { accountId: account.id, name } });
-      if (!existing) await prisma.taskCategory.create({ data: { accountId: account.id, name, groupName, isLive, mode, defaultPriority, rotationOrder, order } });
+      const icon = { "Calls": "☎️", "Chats": "💬", "Slack Groups & Channels Support": "💬", "Stakeholder Emails": "✉️", "Open Emails": "📩", "Returns & CX Escalations": "↩️", "Internal Emails & Tickets": "📨", "Seller Verification": "✅", "Social Reviews": "⭐" }[name] ?? "📋";
+      if (!existing) await prisma.taskCategory.create({ data: { accountId: account.id, name, icon, groupName, isLive, mode, defaultPriority, rotationOrder, order } });
     }
     if (accountData.code === "TRADELING") {
       const consolidated = await prisma.taskCategory.findFirstOrThrow({ where: { accountId: account.id, name: "Slack Groups & Channels Support" } });
