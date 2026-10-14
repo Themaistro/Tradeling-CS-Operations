@@ -89,10 +89,9 @@ export async function POST(request: Request) {
     return `${taskEmoji(task.category.name, task.category.icon === "📌" ? null : task.category.icon)} *${task.category.name}:* ${people}${period}${note ? `\n_${note}_` : ""}`;
   };
   const groupedTasks = [...taskGroups.values()];
-  // The later call-coverage window comes from the generated account plan.
-  // Do not infer a fixed handover time from a shift name or account name.
-  const callStarts = [...new Set(tasks.filter((task) => /call/i.test(task.category.name) && task.startTime).map((task) => task.startTime!))].sort();
-  const eveningStart = callStarts.length > 1 ? callStarts.at(-1) : undefined;
+  // Use responsibility windows, since everyone tasks can span the full shift.
+  const coverageStarts = [...new Set(tasks.filter((task) => task.startTime).map((task) => task.startTime!))].sort();
+  const eveningStart = coverageStarts.length > 1 ? coverageStarts.at(-1) : undefined;
   const isEvening = (group: (typeof tasks)[number][]) => Boolean(eveningStart && group[0].startTime === eveningStart);
   const primaryTaskLines = groupedTasks
     .filter((group) => !isEvening(group) && group[0].category.mode === "FOCUS" && !/call/i.test(group[0].category.name))

@@ -87,7 +87,7 @@ export async function POST(request: Request) {
       taskRows.push({ date, employeeId: assignment.employeeId, categoryId: queue.category.id, priority: 1, startTime: queue.startTime, endTime: queue.endTime, note: `${queue.accountNames.join(" + ")} · primary focus` });
     }
     for (const queue of queues.filter((item) => item.category.mode === "EVERYONE")) for (const assignment of eligible(queue)) {
-      taskRows.push({ date, employeeId: assignment.employeeId, categoryId: queue.category.id, priority: focusOwners.has(assignment.employeeId) ? 2 : 1, startTime: queue.startTime, endTime: queue.endTime, note: queue.accountNames.join(" + ") });
+      taskRows.push({ date, employeeId: assignment.employeeId, categoryId: queue.category.id, priority: queue.category.defaultPriority, startTime: queue.startTime, endTime: queue.endTime, note: queue.accountNames.join(" + ") });
     }
     for (const queue of queues.filter((item) => item.category.mode === "SECONDARY")) {
       const candidates = eligible(queue);
@@ -112,6 +112,24 @@ export async function POST(request: Request) {
     const lateAccountIds = new Set(accountsCoveredForWholeShift(overlapShift).map((account) => account.id));
     const overlapCategories = categories.filter((category) => category.accountId && overlapAccounts.some((account) => account.id === category.accountId));
     const overlapQueues = [...Map.groupBy(overlapCategories, (category) => normalizeQueue(category.name)).entries()];
+    // Everyone responsibilities continue through shared account hours, whether
+    // or not there is a daytime staffing shortage. Keep account windows intact.
+    for (const category of overlapCategories.filter((item) => item.mode === "EVERYONE")) {
+      const account = overlapAccounts.find((item) => item.id === category.accountId);
+      if (!account) continue;
+      const windows = account.coverageRequirements.filter((item) => item.dayOfWeek === weekday && toMinutes(item.startTime) < overlapEnd && toMinutes(item.endTime) > overlapStart);
+      if (!windows.length) continue;
+      const startTime = toTime(Math.max(overlapStart, Math.min(...windows.map((item) => toMinutes(item.startTime)))));
+      const endTime = toTime(Math.min(overlapEnd, Math.max(...windows.map((item) => toMinutes(item.endTime)))));
+      for (const assignment of overlapGroup.filter((item) => account.employeeCapabilities.some((capability) => capability.employeeId === item.employeeId))) {
+        const existing = taskRows.find((row) => row.employeeId === assignment.employeeId && row.categoryId === category.id);
+        if (existing) {
+          existing.startTime = existing.startTime && existing.startTime < startTime ? existing.startTime : startTime;
+          existing.endTime = existing.endTime && existing.endTime > endTime ? existing.endTime : endTime;
+          existing.priority = category.defaultPriority;
+        } else taskRows.push({ date, employeeId: assignment.employeeId, categoryId: category.id, priority: category.defaultPriority, startTime, endTime, note: account.name });
+      }
+    }
     const dayEmployeeIds = new Set(dayGroup.map((assignment) => assignment.employeeId));
     const coveredDayFocus = new Set(taskRows.filter((row) => dayEmployeeIds.has(row.employeeId) && categoryById.get(row.categoryId)?.mode === "FOCUS").map((row) => normalizeQueue(categoryById.get(row.categoryId)?.name ?? "")));
     const supportCategory = (items: typeof categories) => items.find((category) => !lateAccountIds.has(category.accountId ?? "") && !taskRows.some((row) => row.employeeId === overlapGroup[0]!.employeeId && row.categoryId === category.id));
@@ -143,7 +161,7 @@ export async function POST(request: Request) {
     for (const [queueName, items] of missingFocus) {
       if (!assignedOverlapFocus.has(queueName)) assignOverlapFocus(queueName, items);
     }
-    if (assignedOverlapFocus.size) for (const [queueName, items] of overlapQueues.filter(([, items]) => items[0].isLive)) {
+    if (assignedOverlapFocus.size) for (const [queueName, items] of overlapQueues.filter(([, items]) => items[0].isLive && items[0].mode !== "EVERYONE")) {
       if (assignedOverlapFocus.has(queueName)) continue;
       const category = supportCategory(items);
       if (!category) continue;

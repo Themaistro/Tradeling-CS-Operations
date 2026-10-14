@@ -2,14 +2,17 @@ import { PrismaClient } from "@prisma/client";
 const prisma = new PrismaClient();
 
 async function main() {
-  const shifts = [{ name: "Day", legacyName: "Morning", startTime: "09:00", endTime: "18:00", color: "orange", order: 1 }, { name: "Late", legacyName: "Evening", startTime: "13:00", endTime: "22:00", color: "blue", order: 2 }];
+  const existingShiftCount = await prisma.shift.count();
+  const shifts = [{ name: "Day", legacyName: "Morning", startTime: "09:00", endTime: "18:00", color: "orange", order: 1 }, { name: "Night", legacyName: "Evening", startTime: "13:00", endTime: "22:00", color: "blue", order: 2 }];
   for (const shift of shifts) {
     const { legacyName, ...shiftData } = shift;
     let saved = await prisma.shift.findFirst({ where: { name: { in: [shift.name, legacyName] } } });
+    if (!saved && existingShiftCount) saved = await prisma.shift.findFirst({ where: { startTime: shift.startTime, endTime: shift.endTime, active: true } });
+    if (!saved && existingShiftCount) continue;
     if (!saved) saved = await prisma.shift.create({ data: shiftData });
     else if (saved.name === legacyName) saved = await prisma.shift.update({ where: { id: saved.id }, data: shiftData });
     for (let dayOfWeek = 0; dayOfWeek < 7; dayOfWeek++) {
-      const minimumStaff = shiftData.name === "Late" ? 1 : dayOfWeek === 1 ? 5 : [2, 3, 4, 5].includes(dayOfWeek) ? 4 : 1;
+      const minimumStaff = shiftData.name === "Night" ? 1 : dayOfWeek === 1 ? 5 : [2, 3, 4, 5].includes(dayOfWeek) ? 4 : 1;
       const rule = { minimumStaff, minimumBilingual: 0, isOverride: false };
       await prisma.staffingRule.upsert({ where: { dayOfWeek_shiftId: { dayOfWeek, shiftId: saved.id } }, create: { dayOfWeek, shiftId: saved.id, ...rule }, update: {} });
     }
@@ -24,10 +27,10 @@ async function main() {
     const account = await prisma.account.upsert({ where: { code: accountData.code }, create: accountData, update: {} });
     const tasks = accountData.code === "TRADELING"
       ? [
-          ["Calls", "Phone", true, "EVERYONE", 2], ["Chats", "Live channels", true, "FOCUS", 1], ["Slack Groups & Channels Support", "Slack support", false, "SECONDARY", 2],
+          ["Calls", "Phone", true, "EVERYONE", 1], ["Chats", "Live channels", true, "FOCUS", 1], ["Slack Groups & Channels Support", "Slack support", false, "SECONDARY", 2],
           ["Stakeholder Emails", "Emails", false, "SECONDARY", 2], ["Open Emails", "Emails", false, "FOCUS", 1], ["Returns & CX Escalations", "Cases", false, "FOCUS", 1], ["Internal Emails & Tickets", "Cases", false, "FOCUS", 1], ["Seller Verification", "Reviews", false, "SECONDARY", 2], ["Social Reviews", "Reviews", false, "SECONDARY", 2],
         ]
-      : [["Calls", "Phone", true, "EVERYONE", 2], ["Chats", "Live channels", true, "FOCUS", 1], ["Open Emails", "Emails", false, "FOCUS", 1], ["Internal Emails & Tickets", "Cases", false, "FOCUS", 1]];
+      : [["Calls", "Phone", true, "EVERYONE", 1], ["Chats", "Live channels", true, "FOCUS", 1], ["Open Emails", "Emails", false, "FOCUS", 1], ["Internal Emails & Tickets", "Cases", false, "FOCUS", 1]];
     for (const [order, [name, groupName, isLive, mode, defaultPriority]] of tasks.entries()) {
       const rotationOrder = { "Chats": 1, "Returns & CX Escalations": 2, "Open Emails": 3, "Internal Emails & Tickets": 4 }[name] ?? 0;
       const existing = await prisma.taskCategory.findFirst({ where: { accountId: account.id, name } });
